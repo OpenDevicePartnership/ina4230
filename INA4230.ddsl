@@ -1,0 +1,512 @@
+device Device {
+    default-byte-order: BE,
+    register-address-type: u8,
+    word-boundaries: "-",
+    default-access: RW,
+
+    /// Configuration register 1
+    register config-1 {
+        address: 0x20,
+        reset: 0xF127,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Active channel enable bits. Bit15=CH4, Bit14=CH3, Bit13=CH2, Bit12=CH1
+            field active-channel 15:12,
+            /// Number of ADC conversion results to average
+            field avg 11:9 -> _ as
+                /// Averaging count
+                enum averaging {
+                    num-1: 0,
+                    num-4: 1,
+                    num-16: 2,
+                    num-64: 3,
+                    num-128: 4,
+                    num-256: 5,
+                    num-512: 6,
+                    num-1024: 7,
+                },
+            /// Bus voltage conversion time
+            field vbusct 8:6 -> _ as
+                /// Bus voltage conversion time
+                enum bus-conversion-time {
+                    us-140: 0,
+                    us-204: 1,
+                    us-332: 2,
+                    us-588: 3,
+                    us-1100: 4,
+                    us-2116: 5,
+                    us-4156: 6,
+                    us-8244: 7,
+                },
+            /// Shunt voltage conversion time
+            field vshct 5:3 -> _ as
+                /// Shunt voltage conversion time
+                enum shunt-conversion-time {
+                    us-140: 0,
+                    us-204: 1,
+                    us-332: 2,
+                    us-588: 3,
+                    us-1100: 4,
+                    us-2116: 5,
+                    us-4156: 6,
+                    us-8244: 7,
+                },
+            /// Operating mode
+            field mode 2:0 -> _ as
+                /// Operating mode
+                enum mode {
+                    shutdown: 0,
+                    shunt-triggered: 1,
+                    bus-triggered: 2,
+                    shunt-and-bus-triggered: 3,
+                    shutdown-2: 4,
+                    continuous-shunt: 5,
+                    continuous-bus: 6,
+                    continuous-shunt-and-bus: 7,
+                },
+        },
+    },
+    /// Configuration register 2
+    register config-2 {
+        address: 0x21,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// System reset. Set to 1 to reset all registers to default. Self-clears.
+            field rst 15,
+            /// Energy accumulator reset per channel. Bit11=CH4, Bit10=CH3, Bit9=CH2, Bit8=CH1. Bits self-clear after write.
+            field acc-rst 11:8,
+            /// Conversion ready flag on ALERT pin enable
+            field cnvr-mask 7,
+            /// Energy overflow alert enable
+            field enof-mask 6,
+            /// Alert pin latch enable. When set, alert latches until flags register is read.
+            field alert-latch 5,
+            /// Alert pin polarity
+            field alert-pol 4 -> _ as enum alert-polarity {
+                active-low: 0,
+                active-high: 1,
+            },
+            /// Shunt full scale input range per channel. Bit3=CH4, Bit2=CH3, Bit1=CH2, Bit0=CH1. 0=±81.92mV, 1=±20.48mV
+            field range 3:0,
+        },
+    },
+    /// Calibration register channel 1
+    register calibration-ch-1 {
+        address: 0x05,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Shunt calibration value for current conversion
+            field shunt-cal 14:0,
+        },
+    },
+    /// Calibration register channel 2
+    register calibration-ch-2 {
+        address: 0x0D,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Shunt calibration value for current conversion
+            field shunt-cal 14:0,
+        },
+    },
+    /// Calibration register channel 3
+    register calibration-ch-3 {
+        address: 0x15,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Shunt calibration value for current conversion
+            field shunt-cal 14:0,
+        },
+    },
+    /// Calibration register channel 4
+    register calibration-ch-4 {
+        address: 0x1D,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Shunt calibration value for current conversion
+            field shunt-cal 14:0,
+        },
+    },
+    /// Alert configuration register 1
+    register alert-config-1 {
+        address: 0x07,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Channel assignment for this alert
+            field channel 4:3 -> _ as enum alert-channel {
+                ch1: 0,
+                ch2: 1,
+                ch3: 2,
+                ch4: 3,
+            },
+            /// Active alert function selection
+            field alert-mask 2:0 -> _ as enum alert-function {
+                none: 0,
+                shunt-over-limit: 1,
+                shunt-under-limit: 2,
+                bus-over-limit: 3,
+                bus-under-limit: 4,
+                power-over-limit: 5,
+                reserved-6: 6,
+                reserved-7: 7,
+            },
+        },
+    },
+    /// Alert configuration register 2
+    register alert-config-2 {
+        address: 0x0F,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Channel assignment for this alert
+            field channel 4:3,
+            /// Active alert function selection
+            field alert-mask 2:0,
+        },
+    },
+    /// Alert configuration register 3
+    register alert-config-3 {
+        address: 0x17,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Channel assignment for this alert
+            field channel 4:3,
+            /// Active alert function selection
+            field alert-mask 2:0,
+        },
+    },
+    /// Alert configuration register 4
+    register alert-config-4 {
+        address: 0x1F,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Channel assignment for this alert
+            field channel 4:3,
+            /// Active alert function selection
+            field alert-mask 2:0,
+        },
+    },
+    /// Alert limit register 1. Format matches corresponding result register.
+    register alert-limit-1 {
+        address: 0x06,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Alert threshold. Shunt=signed 16-bit, Bus=unsigned 15-bit, Power=unsigned 16-bit
+            field limit 15:0,
+        },
+    },
+    /// Alert limit register 2
+    register alert-limit-2 {
+        address: 0x0E,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Alert threshold
+            field limit 15:0,
+        },
+    },
+    /// Alert limit register 3
+    register alert-limit-3 {
+        address: 0x16,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Alert threshold
+            field limit 15:0,
+        },
+    },
+    /// Alert limit register 4
+    register alert-limit-4 {
+        address: 0x1E,
+        reset: 0x00,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Alert threshold
+            field limit 15:0,
+        },
+    },
+    /// Shunt voltage channel 1. 2's complement. LSB = 2.5uV (range=0) or 625nV (range=1)
+    register shunt-voltage-ch-1 {
+        address: 0x00,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Differential shunt voltage, 2's complement
+            field vshunt 15:0,
+        },
+    },
+    /// Shunt voltage channel 2
+    register shunt-voltage-ch-2 {
+        address: 0x08,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Differential shunt voltage, 2's complement
+            field vshunt 15:0,
+        },
+    },
+    /// Shunt voltage channel 3
+    register shunt-voltage-ch-3 {
+        address: 0x10,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Differential shunt voltage, 2's complement
+            field vshunt 15:0,
+        },
+    },
+    /// Shunt voltage channel 4
+    register shunt-voltage-ch-4 {
+        address: 0x18,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Differential shunt voltage, 2's complement
+            field vshunt 15:0,
+        },
+    },
+    /// Bus voltage channel 1. Always positive. LSB = 1.6mV
+    register bus-voltage-ch-1 {
+        address: 0x01,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Bus voltage, always positive, 2's complement format
+            field vbus 15:0,
+        },
+    },
+    /// Bus voltage channel 2
+    register bus-voltage-ch-2 {
+        address: 0x09,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Bus voltage
+            field vbus 15:0,
+        },
+    },
+    /// Bus voltage channel 3
+    register bus-voltage-ch-3 {
+        address: 0x11,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Bus voltage
+            field vbus 15:0,
+        },
+    },
+    /// Bus voltage channel 4
+    register bus-voltage-ch-4 {
+        address: 0x19,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Bus voltage
+            field vbus 15:0,
+        },
+    },
+    /// Current channel 1. Value [A] = CURRENT_LSB x register_value
+    register current-ch-1 {
+        address: 0x02,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Calculated current in amperes, 2's complement
+            field current 15:0,
+        },
+    },
+    /// Current channel 2
+    register current-ch-2 {
+        address: 0x0A,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Calculated current in amperes, 2's complement
+            field current 15:0,
+        },
+    },
+    /// Current channel 3
+    register current-ch-3 {
+        address: 0x12,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Calculated current in amperes, 2's complement
+            field current 15:0,
+        },
+    },
+    /// Current channel 4
+    register current-ch-4 {
+        address: 0x1A,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Calculated current in amperes, 2's complement
+            field current 15:0,
+        },
+    },
+    /// Power channel 1. Value [W] = 32 x CURRENT_LSB x register_value. Unsigned.
+    register power-ch-1 {
+        address: 0x03,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Calculated power in watts, unsigned
+            field power 15:0,
+        },
+    },
+    /// Power channel 2
+    register power-ch-2 {
+        address: 0x0B,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Calculated power in watts, unsigned
+            field power 15:0,
+        },
+    },
+    /// Power channel 3
+    register power-ch-3 {
+        address: 0x13,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Calculated power in watts, unsigned
+            field power 15:0,
+        },
+    },
+    /// Power channel 4
+    register power-ch-4 {
+        address: 0x1B,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Calculated power in watts, unsigned
+            field power 15:0,
+        },
+    },
+    /// Energy channel 1. Value [J] = 32 x CURRENT_LSB x register_value. Unsigned.
+    register energy-ch-1 {
+        address: 0x04,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 4,
+        
+            /// Accumulated energy in joules, unsigned
+            field energy 31:0,
+        },
+    },
+    /// Energy channel 2
+    register energy-ch-2 {
+        address: 0x0C,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 4,
+        
+            /// Accumulated energy in joules, unsigned
+            field energy 31:0,
+        },
+    },
+    /// Energy channel 3
+    register energy-ch-3 {
+        address: 0x14,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 4,
+        
+            /// Accumulated energy in joules, unsigned
+            field energy 31:0,
+        },
+    },
+    /// Energy channel 4
+    register energy-ch-4 {
+        address: 0x1C,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 4,
+        
+            /// Accumulated energy in joules, unsigned
+            field energy 31:0,
+        },
+    },
+    /// Flags register
+    register flags {
+        address: 0x22,
+        reset: 0x00,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Alert limit 4 exceeded
+            field limit4-alert 15,
+            /// Alert limit 3 exceeded
+            field limit3-alert 14,
+            /// Alert limit 2 exceeded
+            field limit2-alert 13,
+            /// Alert limit 1 exceeded
+            field limit1-alert 12,
+            /// Energy register overflow channel 4
+            field energyof-ch4 11,
+            /// Energy register overflow channel 3
+            field energyof-ch3 10,
+            /// Energy register overflow channel 2
+            field energyof-ch2 9,
+            /// Energy register overflow channel 1
+            field energyof-ch1 8,
+            /// Conversion ready flag. Set when all conversions and averaging complete. Cleared by writing CONFIG1 or reading FLAGS.
+            field cvrf 7,
+            /// Math overflow flag. Indicates current and power data may be invalid.
+            field ovf 6,
+        },
+    },
+    /// Manufacturer ID. Reads back 0x5449 ('TI' in ASCII)
+    register manufacturer-id {
+        address: 0x7E,
+        reset: 0x5449,
+        access: RO,
+        fields: fieldset _ {
+            size-bytes: 2,
+        
+            /// Manufacturer ID
+            field id 15:0,
+        },
+    },
+}

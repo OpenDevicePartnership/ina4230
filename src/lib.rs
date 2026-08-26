@@ -12,6 +12,7 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(async_fn_in_trait)]
 
+use device_driver::FieldsetMetadata;
 use embedded_sensors_hal_async::sensor;
 
 #[allow(clippy::all)]
@@ -62,15 +63,17 @@ pub struct DeviceInterface<I2c: embedded_hal_async::i2c::I2c> {
     pub address: u8,
 }
 
-impl<I2c: embedded_hal_async::i2c::I2c> device_driver::AsyncRegisterInterface for DeviceInterface<I2c> {
+impl<I2c: embedded_hal_async::i2c::I2c> device_driver::RegisterInterfaceBase for DeviceInterface<I2c> {
     type Error = Ina4230Error<I2c::Error>;
     type AddressType = u8;
+}
 
+impl<I2c: embedded_hal_async::i2c::I2c> device_driver::AsyncRegisterInterface for DeviceInterface<I2c> {
     async fn write_register(
         &mut self,
         address: Self::AddressType,
-        _size_bits: u32,
-        data: &[u8],
+        data: &mut [u8],
+        _meta_data: &FieldsetMetadata,
     ) -> Result<(), Self::Error> {
         debug_assert!(data.len() <= LARGEST_REG_SIZE_BYTES, "Register data too large");
         let mut buf = [0u8; 1 + LARGEST_REG_SIZE_BYTES];
@@ -85,8 +88,8 @@ impl<I2c: embedded_hal_async::i2c::I2c> device_driver::AsyncRegisterInterface fo
     async fn read_register(
         &mut self,
         address: Self::AddressType,
-        _size_bits: u32,
         data: &mut [u8],
+        _meta_data: &FieldsetMetadata,
     ) -> Result<(), Self::Error> {
         self.i2c
             .write_read(self.address, &[address], data)
@@ -281,7 +284,7 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
 
     /// Release the underlying I²C bus.
     pub fn release(self) -> I2c {
-        self.device.interface.i2c
+        self.device.free().i2c
     }
 
     // ── Device management ─────────────────────────────────────────────────
@@ -320,7 +323,7 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// # Errors
     ///
     /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs.
-    pub async fn flags(&mut self) -> Result<field_sets::Flags, Ina4230Error<I2c::Error>> {
+    pub async fn flags(&mut self) -> Result<Flags, Ina4230Error<I2c::Error>> {
         self.device.flags().read_async().await
     }
 
@@ -576,6 +579,7 @@ impl<I2c: embedded_hal_async::i2c::I2c> EnergySensor for Ina4230<I2c> {
 
 #[cfg(test)]
 mod tests {
+    use device_driver::Block;
     use embedded_hal_mock::eh1::i2c::{Mock, Transaction};
 
     use super::*;
@@ -595,7 +599,7 @@ mod tests {
         });
         let id = dev.manufacturer_id().read_async().await.unwrap();
         assert_eq!(id.id(), 0x5449);
-        dev.interface.i2c.done();
+        dev.interface().i2c.done();
     }
 
     #[tokio::test]
@@ -617,7 +621,7 @@ mod tests {
             .write_async(|w| w.set_shunt_cal(cal))
             .await
             .unwrap();
-        dev.interface.i2c.done();
+        dev.interface().i2c.done();
     }
 
     #[tokio::test]

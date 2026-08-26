@@ -100,9 +100,9 @@ coarse.
 The INA4230 supports two shunt input voltage ranges, configured via `AdcRange`:
 
 | `AdcRange`         | Full-scale range | LSB    |
-|--------------------|-----------------|--------|
-| `Range0` (default) | ±81.92 mV       | 2.5 µV |
-| `Range1`           | ±20.48 mV       | 625 nV |
+| ------------------ | ---------------- | ------ |
+| `Range0` (default) | ±81.92 mV        | 2.5 µV |
+| `Range1`           | ±20.48 mV        | 625 nV |
 
 `Range0` is the default and suits most applications. Use `Range1` for higher
 resolution when measuring small currents through a large shunt resistor.
@@ -198,7 +198,7 @@ let sensor = Ina4230::new(i2c, AddrPinState::Vs, AddrPinState::Sda);
 All 16 address combinations (per datasheet Table 6-1):
 
 | A0  | A1  | Address |
-|-----|-----|---------|
+| --- | --- | ------- |
 | GND | GND | `0x40`  |
 | VS  | GND | `0x41`  |
 | GND | SDA | `0x42`  |
@@ -227,7 +227,7 @@ cp generated.rs src/device.rs
 
 ## MSRV
 
-Rust `1.88` and up.
+Rust `1.94` and up.
 
 ## License
 

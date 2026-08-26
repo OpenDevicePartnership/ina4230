@@ -21,8 +21,8 @@ jobs:
         uses: baptiste0928/cargo-install@v3
         with:
           crate: device-driver-cli
-      - name: Generate device.rs from INA4230.toml
-        run: device-driver-cli --manifest INA4230.toml --device-name Device -o ci_gen.rs
+      - name: Generate device.rs from INA4230.ddsl
+        run: ddc build rust -s INA4230.ddsl -o ci_gen.rs --rust-defmt-feature=defmt
       - name: Format generated file
         run: rustfmt --edition 2024 ci_gen.rs
       - name: Check generated file matches committed src/device.rs
