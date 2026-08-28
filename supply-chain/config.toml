@@ -19,34 +19,6 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 [imports.zcash]
 url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
 
-[[exemptions.embedded-hal-mock]]
-version = "0.11.1"
-criteria = "safe-to-run"
-
-[[exemptions.embedded-sensors-hal]]
-version = "0.1.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.embedded-sensors-hal-async]]
 version = "0.4.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.embedded-time]]
-version = "0.12.1"
-criteria = "safe-to-run"
-
-[[exemptions.num]]
-version = "0.3.1"
-criteria = "safe-to-run"
-
-[[exemptions.num-complex]]
-version = "0.3.1"
-criteria = "safe-to-run"
-
-[[exemptions.num-rational]]
-version = "0.3.2"
-criteria = "safe-to-run"
-
-[[exemptions.paste]]
-version = "1.0.15"
 criteria = "safe-to-deploy"
