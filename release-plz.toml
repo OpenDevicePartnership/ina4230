@@ -1,0 +1,44 @@
+# Release-plz configuration.
+#
+# Releases in this repository are fully automated. Nothing here is edited by
+# hand: not `version` in `Cargo.toml`, not `CHANGELOG.md`, not the git tags.
+# See `.github/workflows/release-plz.yml` for the two jobs that drive it, and
+# the "Releases" section of `.github/copilot-instructions.md` for the
+# contributor-facing rules.
+#
+# Docs: https://release-plz.dev/docs/config
+
+[workspace]
+# Pin the canonical repository instead of letting release-plz infer it from
+# the default git remote. Development happens through forks, so a contributor
+# running `release-plz update` locally would otherwise generate changelog
+# entries and release links pointing at their own fork.
+repo_url = "https://github.com/OpenDevicePartnership/ina4230"
+
+[[package]]
+name = "ina4230"
+
+# Regenerate `CHANGELOG.md` from the conventional commits that have landed
+# since the last tag. The commit subjects are the changelog, which is why the
+# commit convention is mandatory rather than advisory.
+changelog_update = true
+
+# Tag `vX.Y.Z` and cut a GitHub release whose body is the matching changelog
+# section.
+git_release_enable = true
+
+# Publish to crates.io. The workflow authenticates with Trusted Publishing,
+# so there is no registry token anywhere in this repository.
+publish = true
+
+# Run cargo-semver-checks and let it drive the version bump: an undeclared API
+# break is promoted to a major semver bump, which on `0.x` means `0.x` ->
+# `0.(x+1)`.
+#
+# `check.yml` has a `semver` job commented out with "Enable once we have a
+# released crate". It stays commented out for now: cargo-semver-checks needs a
+# published baseline to diff against, so enabling it before the first release
+# would fail every pull request. Once a version is on crates.io, that job can
+# be enabled to get the check on every PR instead of only on the release PR --
+# at which point set `semver_check = false` here to avoid running it twice.
+semver_check = true
