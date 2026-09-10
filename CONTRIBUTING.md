@@ -16,12 +16,18 @@ pull request so that the project team can discuss the situation with you.
 
 ## Commit Message
 
-* Use meaningful commit messages. See [this blogpost](http://tbaggery.com/2008/04/19/a-note-about-git-commit-messages.html)
+* Use [Conventional Commits](https://www.conventionalcommits.org/) for the subject line: `<type>[optional scope][!]: <description>`. This is required — releases are automated with [release-plz](https://release-plz.dev), which reads commit subjects to pick the next version and to write `CHANGELOG.md`.
+* Use the body to explain *what* and *why*, not *how*. See [this blogpost](http://tbaggery.com/2008/04/19/a-note-about-git-commit-messages.html) for the rest of the guidance on writing a good body.
+
+## Releases
+
+* Releases are automated. Do not edit `version` in `Cargo.toml`, do not write `CHANGELOG.md` entries by hand, and do not push tags — release-plz owns all three.
 
 ## PR Etiquette
 
 * Create a draft PR first
 * Make sure that your branch has `.github` folder and all the code linting/sanity check workflows are passing in your draft PR before sending it out to code reviewers.
+* Title the PR using Conventional Commits as well. Squash-merging a PR with more than one commit uses the PR title as the commit subject, and that subject is what drives the version bump and the changelog entry.
 
 ## Regressions
 
