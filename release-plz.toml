@@ -15,6 +15,17 @@
 # entries and release links pointing at their own fork.
 repo_url = "https://github.com/OpenDevicePartnership/ina4230"
 
+# Pin the release pull request's branch prefix instead of inheriting
+# release-plz's default. This repository forbids branch creation and force
+# pushes on `refs/heads/*`, and the two branch rulesets carve out exactly one
+# namespace -- `refs/heads/release-plz-*` -- for release-plz to open its pull
+# request from. That exclusion is matched on the branch name, so the prefix is
+# load-bearing: if release-plz ever changed its default, the branch would land
+# outside the carve-out and every release would fail on a rule violation
+# instead of a visible configuration change. Keep this value and the ruleset
+# exclusions in step.
+pr_branch_prefix = "release-plz-"
+
 [[package]]
 name = "ina4230"
 
