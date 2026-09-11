@@ -251,6 +251,24 @@ in the device across reads. Latched alerts do not, so if alert information
 matters, inspect every `Flags` value a polling loop returns rather than only
 the last one.
 
+**An energy overflow cannot be cleared through this crate.** `CONFIG2.ACC_RST`
+is not exposed yet, and the bit is not read-to-clear, so once a channel's
+accumulator wraps the flag stays set and the energy readings stay wrong. The
+only recovery is `reset()`, which returns every register to its default —
+including `SHUNT_CAL`, so every channel must be recalibrated afterwards or it
+reports zero current forever (datasheet 8.1.2). Size `CurrentLsb` for the
+expected run time if that matters: the accumulator is 32 bits, and once it
+wraps the only way back is a full reinitialisation.
+
+The four limit-alert flags do not correspond to the averaged readings. The
+device compares each alert limit against *every* conversion rather than
+against the averaged result that reaches the output registers (datasheet
+6.3.5), so with averaging enabled a limit flag can report an excursion that
+appears in no value this crate can read back. That disagreement is correct
+behaviour. It cannot arise through this crate today, because `AVG` is not
+configurable here and the power-on default is a single sample, but it can if
+another controller on the bus has programmed `CONFIG1`.
+
 ## Error handling
 
 `Ina4230Error` is small on purpose: overflow conditions are reported through
@@ -319,7 +337,8 @@ The following register controls and device protocols are defined by
   `MODE`. The power-on defaults are used: one sample, 1.1 ms bus and shunt
   conversion times, and continuous shunt-and-bus conversion.
 - **Energy accumulator reset** (`CONFIG2.ACC_RST`), which also clears the
-  energy overflow flags.
+  energy overflow flags. Until this lands, an energy overflow is unrecoverable
+  short of `reset()` and a full recalibration — see "Reading flags".
 - **`SMBus` Alert Response** (address `0b0001100`) and **General Call reset**
   (`0x00`, `0x06`). These are bus protocols rather than registers, so they are
   not part of the generated register layer either.
@@ -327,6 +346,18 @@ The following register controls and device protocols are defined by
 The `FLAGS` register already exposes the four alert-limit bits via
 `Flags::limit_alerts()`, so alert conditions are observable even though they
 cannot yet be configured through this crate.
+
+### Out of scope
+
+**High-speed I²C** (datasheet 6.5.3) is the third bus-level protocol the
+datasheet describes, alongside the two listed above, but it is not a gap in
+this driver. The device enters high-speed mode when a controller sends the
+reserved master code `0b00001xxx` and leaves it on the next stop condition;
+nothing in the sequence is addressed to the INA4230, and the part needs no
+register written to participate. It is a property of the bus, and therefore of
+whichever `embedded-hal-async` I²C implementation is passed to
+`Ina4230::new` — not something this crate can offer or withhold. If the
+controller supports 2.94 MHz operation, this driver already works over it.
 
 ## Regenerating `src/device.rs`
 
