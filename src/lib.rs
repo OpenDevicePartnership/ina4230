@@ -130,18 +130,51 @@ impl Flags {
     }
 
     /// The energy accumulator for `channel` has overflowed.
+    ///
+    /// # This crate cannot clear it
+    ///
+    /// The bit is not read-to-clear. The datasheet clears it only through
+    /// `CONFIG2.ACC_RST` (Table 7-4, bits 11-8), which this crate does not
+    /// expose yet, so the flag stays set and the accumulator keeps returning
+    /// a wrapped value for as long as the driver lives.
+    ///
+    /// The only recovery available here is [`Ina4230::reset`], which restores
+    /// every register to its default. That zeroes `SHUNT_CAL`, so the channel
+    /// must be recalibrated afterwards or it reports zero current forever
+    /// (datasheet 8.1.2). Treat an energy overflow as "reset and recalibrate",
+    /// not as something a subsequent read clears.
     #[must_use]
     pub const fn energy_overflow(self, channel: Channel) -> bool {
         self.energy_overflow[channel.index()]
     }
 
     /// Any channel's energy accumulator has overflowed.
+    ///
+    /// See [`Flags::energy_overflow`] for why this condition is sticky and
+    /// what clearing it costs.
     #[must_use]
     pub fn any_energy_overflow(self) -> bool {
         self.energy_overflow.iter().any(|&v| v)
     }
 
     /// The four alert limit flags, ordered `[LIMIT1, LIMIT2, LIMIT3, LIMIT4]`.
+    ///
+    /// Each flag belongs to an `ALERT_CONFIG` register rather than to a fixed
+    /// channel, so the channel a flag refers to is whatever that register's
+    /// `CHANNEL` field selects (datasheet Table 7-8).
+    ///
+    /// # These do not correspond to the averaged readings
+    ///
+    /// The device compares the alert limit against *every* conversion, not
+    /// against the averaged result that reaches the output registers
+    /// (datasheet 6.3.5). With averaging enabled a limit flag can therefore
+    /// report an excursion that appears in no value [`Ina4230`] can read back,
+    /// and the flag disagreeing with the measurement registers is correct
+    /// behaviour rather than a fault.
+    ///
+    /// This crate does not configure `AVG` and the power-on default is a
+    /// single sample, so the two agree unless something else on the bus has
+    /// programmed `CONFIG1`.
     #[must_use]
     pub const fn limit_alerts(self) -> [bool; 4] {
         self.limit_alerts
@@ -330,6 +363,10 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// `CONFIG2.ACC_RST`. Those conditions therefore persist in the device
     /// across reads, but each returned [`Flags`] value is still the only
     /// record the caller gets of that particular snapshot.
+    ///
+    /// `CONFIG2.ACC_RST` is not exposed by this crate, so an energy overflow
+    /// cannot be cleared short of [`Ina4230::reset`] and a recalibration. See
+    /// [`Flags::energy_overflow`].
     ///
     /// To poll for conversion completion:
     ///
