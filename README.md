@@ -1,3 +1,10 @@
+[![check](https://github.com/OpenDevicePartnership/ina4230/actions/workflows/check.yml/badge.svg)](https://github.com/OpenDevicePartnership/ina4230/actions/workflows/check.yml)
+[![no-std](https://github.com/OpenDevicePartnership/ina4230/actions/workflows/nostd.yml/badge.svg)](https://github.com/OpenDevicePartnership/ina4230/actions/workflows/nostd.yml)
+[![device-driver-pregen-check](https://github.com/OpenDevicePartnership/ina4230/actions/workflows/device-driver.yml/badge.svg)](https://github.com/OpenDevicePartnership/ina4230/actions/workflows/device-driver.yml)
+[![release-plz](https://github.com/OpenDevicePartnership/ina4230/actions/workflows/release-plz.yml/badge.svg)](https://github.com/OpenDevicePartnership/ina4230/actions/workflows/release-plz.yml)
+[![crates.io](https://img.shields.io/crates/v/ina4230)](https://crates.io/crates/ina4230)
+[![license](https://img.shields.io/crates/l/ina4230)](https://github.com/OpenDevicePartnership/ina4230/blob/main/LICENSE)
+
 # INA4230 Rust Device Driver
 
 A `#[no_std]` platform-agnostic driver for the [INA4230](https://www.ti.com/lit/ds/symlink/ina4230.pdf)
