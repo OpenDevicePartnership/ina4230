@@ -351,7 +351,7 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     ///
     /// A stale *calibration* is the dangerous direction: a reset zeroes
     /// `SHUNT_CAL`, so the part reports a current of exactly zero (datasheet
-    /// 8.1.2) - a plausible reading rather than an obvious fault. Clearing
+    /// §8.1.2) — a plausible reading rather than an obvious fault. Clearing
     /// first makes the cache never outlive the device's calibration. The cost
     /// of clearing unnecessarily is one redundant calibration; the cost of not
     /// clearing is silently wrong measurements.
@@ -359,7 +359,7 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// A cleared *alert* cache is the dangerous direction. If the reset did not
     /// land, slots are still armed on the device while the driver believes they
     /// are not, so the next [`Ina4230::calibrate`] finds nothing to disarm and
-    /// moves `CONFIG2.RANGE` under a live shunt or power threshold - the
+    /// moves `CONFIG2.RANGE` under a live shunt or power threshold — the
     /// factor-of-four error the disarming exists to prevent, with no record
     /// left anywhere. The cache is therefore cleared only once the write
     /// succeeds. Over-reporting costs at most a few redundant `ALERT_MASK` = 0
@@ -637,8 +637,8 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// *new* threshold against the *old* mask and channel. For a slot armed as
     /// a 1 mV shunt-over alert (limit 400, mask 1) and reprogrammed to a 12 V
     /// bus-over alert, a failure in between would leave the device enforcing
-    /// 7500 counts as a shunt threshold - 18.75 mV, eighteen times weaker than
-    /// asked for - while the cache still claimed 1 mV.
+    /// 7500 counts as a shunt threshold — 18.75 mV, eighteen times weaker than
+    /// asked for — while the cache still claimed 1 mV.
     ///
     /// So when the cache shows `slot` armed, `ALERT_MASK` is cleared and the
     /// cache entry dropped before the new pair goes in. Any failure then leaves
@@ -649,7 +649,7 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// # Errors
     ///
     /// Returns [`Ina4230Error::NotCalibrated`] if `alert` is a shunt or power
-    /// condition and `channel` has no calibration - those thresholds scale with
+    /// condition and `channel` has no calibration — those thresholds scale with
     /// [`AdcRange`] and `CURRENT_LSB`. Bus conditions need no calibration.
     ///
     /// Returns [`Ina4230Error::LimitOutOfRange`] if the threshold does not fit
