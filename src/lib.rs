@@ -630,10 +630,26 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// Writes `ALERT_LIMIT` and then `ALERT_CONFIG`, so the threshold is in
     /// place before the condition is enabled.
     ///
+    /// # Reprogramming an armed slot disarms it first
+    ///
+    /// `ALERT_LIMIT` and `ALERT_CONFIG` are separate registers, so a slot that
+    /// is already armed would spend the gap between the two writes holding the
+    /// *new* threshold against the *old* mask and channel. For a slot armed as
+    /// a 1 mV shunt-over alert (limit 400, mask 1) and reprogrammed to a 12 V
+    /// bus-over alert, a failure in between would leave the device enforcing
+    /// 7500 counts as a shunt threshold - 18.75 mV, eighteen times weaker than
+    /// asked for - while the cache still claimed 1 mV.
+    ///
+    /// So when the cache shows `slot` armed, `ALERT_MASK` is cleared and the
+    /// cache entry dropped before the new pair goes in. Any failure then leaves
+    /// the slot disarmed, or loaded with a new threshold and a clear mask,
+    /// which raises nothing. A slot the cache shows as disarmed still costs
+    /// exactly the two writes.
+    ///
     /// # Errors
     ///
     /// Returns [`Ina4230Error::NotCalibrated`] if `alert` is a shunt or power
-    /// condition and `channel` has no calibration — those thresholds scale with
+    /// condition and `channel` has no calibration - those thresholds scale with
     /// [`AdcRange`] and `CURRENT_LSB`. Bus conditions need no calibration.
     ///
     /// Returns [`Ina4230Error::LimitOutOfRange`] if the threshold does not fit
@@ -643,7 +659,7 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     ///
     /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. This operation
     /// is not transactional: if the `ALERT_LIMIT` write lands and the
-    /// `ALERT_CONFIG` write does not, the slot stays disarmed with a new
+    /// `ALERT_CONFIG` write does not, the slot is left disarmed with a new
     /// threshold loaded, and the cache is not updated.
     pub async fn set_alert(
         &mut self,
@@ -652,6 +668,11 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
         alert: Alert,
     ) -> Result<(), Ina4230Error<I2c::Error>> {
         let raw = self.encode_alert(slot, channel, alert)?;
+
+        // Never let the new limit sit against the old mask and channel.
+        if self.alerts[slot.index()].is_some() {
+            self.clear_alert(slot).await?;
+        }
 
         self.device
             .alert_regs(slot.into())

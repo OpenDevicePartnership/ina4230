@@ -480,13 +480,18 @@ async fn set_alert_addresses_every_slot_and_encodes_the_config() {
 #[tokio::test]
 async fn alert_config_encodes_each_target_channel() {
     // Same slot, four different target channels. CHANNEL occupies bits 4:3.
+    // Each iteration after the first reprograms an armed slot, so it is
+    // disarmed first rather than left holding a limit against the old channel.
     let expectations = vec![
         Transaction::write(ADDR, vec![0x06, 0x1D, 0x4C]),
         Transaction::write(ADDR, vec![0x07, 0x00, 0x03]), // Ch1 => 0b00_011
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x00]),
         Transaction::write(ADDR, vec![0x06, 0x1D, 0x4C]),
         Transaction::write(ADDR, vec![0x07, 0x00, 0x0B]), // Ch2 => 0b01_011
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x00]),
         Transaction::write(ADDR, vec![0x06, 0x1D, 0x4C]),
         Transaction::write(ADDR, vec![0x07, 0x00, 0x13]), // Ch3 => 0b10_011
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x00]),
         Transaction::write(ADDR, vec![0x06, 0x1D, 0x4C]),
         Transaction::write(ADDR, vec![0x07, 0x00, 0x1B]), // Ch4 => 0b11_011
     ];
@@ -543,6 +548,62 @@ async fn clear_alert_zeroes_the_mask_and_drops_the_cache_entry() {
     dev.set_alert(AlertSlot::Two, Channel::Ch3, alert).await.unwrap();
     dev.clear_alert(AlertSlot::Two).await.unwrap();
     assert_eq!(dev.alert(AlertSlot::Two), None);
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn reprogramming_an_armed_slot_disarms_it_first() {
+    // Slot 1 is armed as ShuntOver on Ch1 (limit 400, mask 1) and is
+    // reprogrammed to BusOver (limit 7500, mask 3). If only the limit landed,
+    // the device would read 7500 as a *shunt* threshold: 7500 * 2.5 uV =
+    // 18.75 mV, 18x weaker than the 1 mV the caller asked for. So the mask is
+    // cleared before the new limit goes in.
+    let cal = example_cal();
+    let mut dev = sensor(&[
+        // calibrate Ch1
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x05, 0x05, 0x00]),
+        // arm slot 1: 1 mV / 2.5 uV = 400 = 0x0190, Ch1 + SOL => 0b00_001
+        Transaction::write(ADDR, vec![0x06, 0x01, 0x90]),
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x01]),
+        // reprogram to BusOver: the disarm comes first
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x00]),
+        // 12 V / 1.6 mV = 7500 = 0x1D4C
+        Transaction::write(ADDR, vec![0x06, 0x1D, 0x4C]),
+        // and the new config write fails
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x03]).with_error(ErrorKind::Other),
+    ]);
+
+    dev.calibrate(Channel::Ch1, cal).await.unwrap();
+    let shunt = Alert::ShuntOver(ShuntVoltage::from_nanovolts(1_000_000));
+    dev.set_alert(AlertSlot::One, Channel::Ch1, shunt).await.unwrap();
+
+    let bus = Alert::BusOver(BusVoltage::from_microvolts(12_000_000));
+    assert!(dev.set_alert(AlertSlot::One, Channel::Ch1, bus).await.is_err());
+
+    assert_eq!(
+        dev.alert(AlertSlot::One),
+        None,
+        "the slot was disarmed and never re-armed, so no stale configuration may remain"
+    );
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn reprogramming_a_disarmed_slot_costs_no_extra_write() {
+    // The disarm is paid for only when the slot is actually armed.
+    let mut dev = sensor(&[
+        Transaction::write(ADDR, vec![0x06, 0x1D, 0x4C]),
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x03]),
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x06, 0x1D, 0x4C]),
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x03]),
+    ]);
+    let bus = Alert::BusOver(BusVoltage::from_microvolts(12_000_000));
+    dev.set_alert(AlertSlot::One, Channel::Ch1, bus).await.unwrap();
+    dev.clear_alert(AlertSlot::One).await.unwrap();
+    dev.set_alert(AlertSlot::One, Channel::Ch1, bus).await.unwrap();
     dev.release().done();
 }
 
