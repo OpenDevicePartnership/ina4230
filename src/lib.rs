@@ -336,8 +336,9 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     ///
     /// It also includes every `ALERT_CONFIG`, which returns to a reserved
     /// no-effect `ALERT_MASK`, so the cached per-slot alert configuration is
-    /// discarded once the write lands. [`Ina4230::alert`] reports every slot as
-    /// disarmed afterwards, which is what the device now is.
+    /// discarded once the write lands. On success [`Ina4230::alert`] reports
+    /// every slot as disarmed, which is what the device now is; on failure the
+    /// cache is left alone, for the reasons below.
     ///
     /// Call [`Ina4230::calibrate`] again before reading shunt voltage, current,
     /// power, or energy.

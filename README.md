@@ -61,7 +61,19 @@ ina4230 = "0.1.0"
 embedded-hal-async = "1"
 ```
 
-```rust,ignore
+```rust,no_run
+# use embedded_hal_mock::eh1::i2c::Mock;
+# #[derive(Debug)]
+# struct DocError;
+# impl<E: core::fmt::Debug> From<ina4230::Ina4230Error<E>> for DocError {
+#     fn from(_: ina4230::Ina4230Error<E>) -> Self { DocError }
+# }
+# impl From<ina4230::CalibrationError> for DocError {
+#     fn from(_: ina4230::CalibrationError) -> Self { DocError }
+# }
+# macro_rules! info { ($($t:tt)*) => { { let _ = ($($t)*); } } }
+# async fn example() -> Result<(), DocError> {
+# let i2c = Mock::new(&[]);
 use ina4230::{
     AdcRange, AddrPinState, AddressPins, Calibration, Channel, CurrentLsb,
     CurrentSensor, Ina4230, ShuntResistance, VoltageSensor,
@@ -89,7 +101,10 @@ while !sensor.read_flags().await?.conversion_ready() {}
 let bus = sensor.bus_voltage(Channel::Ch1).await?;
 let current = sensor.current(Channel::Ch1).await?;
 
-defmt::info!("{} mV, {} mA", bus.to_millivolts(), current.to_milliamps());
+info!("{} mV, {} mA", bus.to_millivolts(), current.to_milliamps());
+# Ok(())
+# }
+# fn main() { tokio::runtime::Runtime::new().unwrap().block_on(example()).unwrap(); }
 ```
 
 ## Configuration
@@ -195,8 +210,21 @@ got.
 All four channels are active after power-up. Unused channels can be disabled to
 shorten the conversion cycle:
 
-```rust,ignore
+```rust,no_run
+# use embedded_hal_mock::eh1::i2c::Mock;
+# use ina4230::{AddrPinState, AddressPins, Channel, Ina4230};
+# #[derive(Debug)]
+# struct DocError;
+# impl<E: core::fmt::Debug> From<ina4230::Ina4230Error<E>> for DocError {
+#     fn from(_: ina4230::Ina4230Error<E>) -> Self { DocError }
+# }
+# async fn example() -> Result<(), DocError> {
+# let i2c = Mock::new(&[]);
+# let mut sensor = Ina4230::new(i2c, AddressPins { a0: AddrPinState::Gnd, a1: AddrPinState::Gnd });
 sensor.set_channel_active(Channel::Ch3, false).await?;
+# Ok(())
+# }
+# fn main() { tokio::runtime::Runtime::new().unwrap().block_on(example()).unwrap(); }
 ```
 
 ## Examples
@@ -229,7 +257,18 @@ These need hardware, so they are not run in CI — only compiled.
 
 `read_flags()` returns the whole `FLAGS` register:
 
-```rust,ignore
+```rust,no_run
+# use embedded_hal_mock::eh1::i2c::Mock;
+# use ina4230::{AddrPinState, AddressPins, Ina4230};
+# #[derive(Debug)]
+# struct DocError;
+# impl<E: core::fmt::Debug> From<ina4230::Ina4230Error<E>> for DocError {
+#     fn from(_: ina4230::Ina4230Error<E>) -> Self { DocError }
+# }
+# macro_rules! warn { ($($t:tt)*) => { { let _ = ($($t)*); } } }
+# async fn example() -> Result<(), DocError> {
+# let i2c = Mock::new(&[]);
+# let mut sensor = Ina4230::new(i2c, AddressPins { a0: AddrPinState::Gnd, a1: AddrPinState::Gnd });
 let flags = sensor.read_flags().await?;
 if flags.math_overflow() {
     warn!("current and power data may be invalid");
@@ -237,6 +276,9 @@ if flags.math_overflow() {
 if flags.any_energy_overflow() {
     warn!("energy accumulator overflowed");
 }
+# Ok(())
+# }
+# fn main() { tokio::runtime::Runtime::new().unwrap().block_on(example()).unwrap(); }
 ```
 
 **This read has side effects.** Reading `FLAGS` clears the conversion-ready
@@ -278,7 +320,17 @@ A slot is not a channel: any slot can watch any channel, which is why
 `AlertSlot` and `Channel` are separate types. The datasheet calls the slots
 `ALERT1`..`ALERT4` (Table 7-7).
 
-```rust,ignore
+```rust,no_run
+# use embedded_hal_mock::eh1::i2c::Mock;
+# use ina4230::{AddrPinState, AddressPins, Ina4230};
+# #[derive(Debug)]
+# struct DocError;
+# impl<E: core::fmt::Debug> From<ina4230::Ina4230Error<E>> for DocError {
+#     fn from(_: ina4230::Ina4230Error<E>) -> Self { DocError }
+# }
+# async fn example() -> Result<(), DocError> {
+# let i2c = Mock::new(&[]);
+# let mut sensor = Ina4230::new(i2c, AddressPins { a0: AddrPinState::Gnd, a1: AddrPinState::Gnd });
 use ina4230::{Alert, AlertSlot, BusVoltage, Channel, ShuntVoltage};
 
 // Undervoltage on channel 2, watched by slot 1.
@@ -296,6 +348,9 @@ sensor.set_alert(
 ).await?;
 
 sensor.clear_alert(AlertSlot::One).await?;
+# Ok(())
+# }
+# fn main() { tokio::runtime::Runtime::new().unwrap().block_on(example()).unwrap(); }
 ```
 
 Each `Alert` variant carries its threshold in the unit that variant implies, so
@@ -323,13 +378,28 @@ Thresholds round to the nearest LSB, so a value read back through
 `Ina4230Error` is small on purpose: overflow conditions are reported through
 `Flags`, not as errors, because an error can carry only one of them.
 
-```rust,ignore
+```rust,no_run
+# use embedded_hal_mock::eh1::i2c::Mock;
+# use ina4230::{AddrPinState, AddressPins, Channel, CurrentSensor, Ina4230, Ina4230Error};
+# macro_rules! info { ($($t:tt)*) => { { let _ = ($($t)*); } } }
+# macro_rules! error { ($($t:tt)*) => { { let _ = ($($t)*); } } }
+# async fn example() {
+# let i2c = Mock::new(&[]);
+# let mut sensor = Ina4230::new(i2c, AddressPins { a0: AddrPinState::Gnd, a1: AddrPinState::Gnd });
 match sensor.current(Channel::Ch1).await {
     Ok(i) => info!("{} mA", i.to_milliamps()),
     Err(Ina4230Error::NotCalibrated(ch)) => error!("calibrate {:?} first", ch),
     Err(Ina4230Error::Bus(e)) => error!("I²C error: {:?}", e),
+    Err(e) => error!("unexpected error: {:?}", e),
 }
+# }
+# fn main() { tokio::runtime::Runtime::new().unwrap().block_on(example()); }
 ```
+
+`Ina4230Error` is `#[non_exhaustive]`, so a wildcard arm is required: code
+outside this crate cannot match it exhaustively, and new variants are not a
+breaking change. The arm above is unreachable for `current()` — that call
+yields only `Bus` or `NotCalibrated` — but the compiler cannot know that.
 
 `NotCalibrated` is detected before any bus traffic is generated.
 
