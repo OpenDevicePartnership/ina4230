@@ -1350,3 +1350,118 @@ async fn calibrate_preserves_alert_pin_config() {
     assert_eq!(dev.calibration(Channel::Ch1), Some(cal));
     dev.release().done();
 }
+
+// ── Energy accumulator reset ──────────────────────────────────────────────────
+
+/// `CONFIG2.ACC_RST` bit 8 is channel 1, and the command is one `CONFIG2`
+/// read-modify-write from a valid steady state where the self-clearing
+/// command bits read back as zero.
+#[tokio::test]
+async fn reset_energy_accumulators_writes_ch1_bit() {
+    // mask = 1 << 0 = 0x1, so 0x0000 | (0x1 << 8) = 0x0100.
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x01, 0x00]),
+    ]);
+    dev.reset_energy_accumulators(&[Channel::Ch1]).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn reset_energy_accumulators_writes_ch2_bit() {
+    // mask = 1 << 1 = 0x2, so 0x0000 | (0x2 << 8) = 0x0200.
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x02, 0x00]),
+    ]);
+    dev.reset_energy_accumulators(&[Channel::Ch2]).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn reset_energy_accumulators_writes_ch3_bit() {
+    // mask = 1 << 2 = 0x4, so 0x0000 | (0x4 << 8) = 0x0400.
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x04, 0x00]),
+    ]);
+    dev.reset_energy_accumulators(&[Channel::Ch3]).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn reset_energy_accumulators_writes_ch4_bit() {
+    // mask = 1 << 3 = 0x8, so 0x0000 | (0x8 << 8) = 0x0800.
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x08, 0x00]),
+    ]);
+    dev.reset_energy_accumulators(&[Channel::Ch4]).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn reset_energy_accumulators_resets_multiple_channels_in_one_write() {
+    // The four-bit command field exists so that any subset costs one write:
+    //
+    //   Ch1 | Ch3 | Ch4 = 0x1 | 0x4 | 0x8 = 0xD
+    //   ACC_RST word    = 0xD << 8        = 0x0D00
+    //
+    // The mock completing on exactly two transactions is what proves this is
+    // one read-modify-write and not three. The repeated Ch3 must collapse
+    // into the same bit rather than costing another pass.
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x0D, 0x00]),
+    ]);
+    dev.reset_energy_accumulators(&[Channel::Ch1, Channel::Ch3, Channel::Ch4, Channel::Ch3])
+        .await
+        .unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn reset_energy_accumulators_preserves_range_and_alert_pin_config() {
+    // CONFIG2 also holds RANGE in bits 3:0, which calibrate() owns and the
+    // calibration cache depends on: clobbering it silently rescales every
+    // later shunt, current, power and energy reading with no error reported.
+    // Bits 7:4 belong to set_alert_pin_config(). Both must survive.
+    //
+    // The read-back is a distinctive steady state, not the reset value:
+    //
+    //   RST       bit 15 = 0       (write-one, self-clearing)
+    //   reserved bits 14:12 = 000
+    //   ACC_RST  bits 11:8 = 0000  (write-one, self-clearing)
+    //   CNVR_MASK   bit 7 = 1  \
+    //   ENOF_MASK   bit 6 = 0   |  ALERT nibble 0b1010 = 0xA
+    //   ALERT_LATCH bit 5 = 1   |
+    //   ALERT_POL   bit 4 = 0  /
+    //   RANGE     bits 3:0 = 0101 = 0x5   => complete word 0x00A5
+    //
+    // Resetting Ch2 and Ch4 gives mask = (1 << 1) | (1 << 3) = 0xA, so
+    //
+    //   (0x00A5 & !0x0F00) | (0xA << 8) = 0x00A5 | 0x0A00 = 0x0AA5
+    //
+    // Both preserved nibbles carry zeroes and ones and are mutually
+    // distinguishable (0xA against 0x5), so a whole-register write or a
+    // swapped nibble is visible rather than accidentally correct.
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0xA5]),
+        Transaction::write(ADDR, vec![0x21, 0x0A, 0xA5]),
+    ]);
+    dev.reset_energy_accumulators(&[Channel::Ch2, Channel::Ch4])
+        .await
+        .unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn reset_energy_accumulators_empty_slice_does_not_touch_bus() {
+    // An empty set is a well-defined no-op, not a write of an empty command:
+    // CONFIG2 is shared, and a pointless read-modify-write of it would risk
+    // losing another controller's update for no benefit. The mock is built
+    // with no expectations, so any transaction at all fails the test.
+    let mut dev = sensor(&[]);
+    dev.reset_energy_accumulators(&[]).await.unwrap();
+    dev.release().done();
+}

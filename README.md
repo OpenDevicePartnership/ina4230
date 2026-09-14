@@ -293,14 +293,34 @@ in the device across reads. Latched alerts do not, so if alert information
 matters, inspect every `Flags` value a polling loop returns rather than only
 the last one.
 
-**An energy overflow cannot be cleared through this crate.** `CONFIG2.ACC_RST`
-is not exposed yet, and the bit is not read-to-clear, so once a channel's
-accumulator wraps the flag stays set and the energy readings stay wrong. The
-only recovery is `reset()`, which returns every register to its default —
-including `SHUNT_CAL`, so every channel must be recalibrated afterwards or it
-reports zero current forever (datasheet 8.1.2). Size `CurrentLsb` for the
-expected run time if that matters: the accumulator is 32 bits, and once it
-wraps the only way back is a full reinitialisation.
+**Recover from energy overflow with a targeted accumulator reset.** The bit is
+not read-to-clear, so once a channel's accumulator wraps, call
+`reset_energy_accumulators()` for that channel before trusting later energy
+readings. The command clears the selected accumulator and its overflow flag
+while preserving `SHUNT_CAL`, `CONFIG2.RANGE`, the other channels, and alert
+configuration; unlike `reset()`, it needs no recalibration. Pass several
+channels to clear them in one `CONFIG2` write, or `&Channel::ALL` to clear all
+four. A `Flags` value read before the command remains a historical snapshot.
+
+Size `CurrentLsb` so the wrap is rare in the first place. `ENERGY` is an
+unsigned 32-bit accumulator whose LSB is `32 × CURRENT_LSB` joules (datasheet
+8.1.2, Equation 5). To avoid a wrap for a time `t` at worst-case power `P`,
+choose `CURRENT_LSB >= P × t / (2^32 × 32)` and also satisfy the current-range
+requirement of Equation 2.
+
+For a rail that can draw 2 A at 48 V (`P = 96 W`) and must run for 24 h
+(`t = 86,400 s`), the duration floor is
+`96 × 86,400 / (4,294,967,296 × 32) = 0.0000603497 A/LSB`, or 60,350 nA/LSB
+after rounding up. The current-range floor is
+`2 A / 32,768 = 0.0000610352 A/LSB`, or 61,036 nA/LSB after rounding up. Take
+the larger floor and round up conveniently: `CurrentLsb::from_nanoamps(62_500)`
+gives an energy LSB of `32 × 62,500 nJ = 2,000,000 nJ = 0.002 J`. A full
+`2^32`-count cycle then represents `4,294,967,296 × 0.002 J = 8,589,934.592 J`,
+which at 96 W takes `8,589,934.592 / 96 = 89,478.4853 s = 24.8551 h` before
+wrapping. It also gives a maximum positive current of
+`32,767 × 62,500 nA = 2.0479375 A`, enough for the stated 2 A maximum. Leave
+margin for load uncertainty; resetting periodically starts a new integration
+interval, but discards the prior hardware total.
 
 The four limit-alert flags do not correspond to the averaged readings. The
 device compares each alert limit against *every* conversion rather than
@@ -443,12 +463,9 @@ Note the column order: A1 first, matching the datasheet.
 
 ## Not yet implemented
 
-The following register controls and device protocols are defined by
-`INA4230.ddsl` or the datasheet, but have no high-level API yet:
+The following device protocols are defined by the datasheet, but have no
+high-level API yet:
 
-- **Energy accumulator reset** (`CONFIG2.ACC_RST`), which also clears the
-  energy overflow flags. Until this lands, an energy overflow is unrecoverable
-  short of `reset()` and a full recalibration — see "Reading flags".
 - **`SMBus` Alert Response** (address `0b0001100`) and **General Call reset**
   (`0x00`, `0x06`). These are bus protocols rather than registers, so they are
   not part of the generated register layer either.
