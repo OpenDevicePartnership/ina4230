@@ -503,3 +503,112 @@ async fn clear_alert_zeroes_the_mask_and_drops_the_cache_entry() {
     assert_eq!(dev.alert(AlertSlot::Two), None);
     dev.release().done();
 }
+
+#[tokio::test]
+async fn recalibration_disarms_shunt_alerts_and_leaves_bus_alerts_armed() {
+    let cal = example_cal();
+    let mut dev = sensor(&[
+        // calibrate Ch1 the first time
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x05, 0x05, 0x00]),
+        // arm slot 1 with a shunt alert on Ch1: 1 mV / 2.5 uV = 400 = 0x0190
+        Transaction::write(ADDR, vec![0x06, 0x01, 0x90]),
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x01]),
+        // arm slot 2 with a bus alert on Ch1: CHANNEL = 0b00, BOL = 3
+        Transaction::write(ADDR, vec![0x0E, 0x1D, 0x4C]),
+        Transaction::write(ADDR, vec![0x0F, 0x00, 0x03]),
+        // recalibrate Ch1: slot 1 is disarmed FIRST, slot 2 is not touched
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x00]),
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x05, 0x05, 0x00]),
+    ]);
+
+    dev.calibrate(Channel::Ch1, cal).await.unwrap();
+
+    let shunt = Alert::ShuntOver(ShuntVoltage::from_nanovolts(1_000_000));
+    let bus = Alert::BusOver(BusVoltage::from_microvolts(12_000_000));
+    dev.set_alert(AlertSlot::One, Channel::Ch1, shunt).await.unwrap();
+    dev.set_alert(AlertSlot::Two, Channel::Ch1, bus).await.unwrap();
+
+    dev.calibrate(Channel::Ch1, cal).await.unwrap();
+
+    assert_eq!(dev.alert(AlertSlot::One), None, "shunt alert must be disarmed");
+    assert_eq!(
+        dev.alert(AlertSlot::Two),
+        Some((Channel::Ch1, bus)),
+        "bus alert is absolutely scaled and must survive"
+    );
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn recalibration_with_no_alerts_emits_no_extra_writes() {
+    let cal = example_cal();
+    // Exactly the three transactions calibrate has always issued.
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x05, 0x05, 0x00]),
+    ]);
+    dev.calibrate(Channel::Ch1, cal).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn alerts_on_other_channels_survive_recalibration() {
+    let cal = example_cal();
+    let mut dev = sensor(&[
+        // calibrate Ch1 and Ch2
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x05, 0x05, 0x00]),
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x0D, 0x05, 0x00]),
+        // arm slot 3 with a shunt alert on Ch2
+        Transaction::write(ADDR, vec![0x16, 0x01, 0x90]),
+        Transaction::write(ADDR, vec![0x17, 0x00, 0x09]), // Ch2 => 0b01_001
+        // recalibrate Ch1: slot 3 targets Ch2, so it must not be touched
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x05, 0x05, 0x00]),
+    ]);
+
+    dev.calibrate(Channel::Ch1, cal).await.unwrap();
+    dev.calibrate(Channel::Ch2, cal).await.unwrap();
+    let shunt = Alert::ShuntOver(ShuntVoltage::from_nanovolts(1_000_000));
+    dev.set_alert(AlertSlot::Three, Channel::Ch2, shunt).await.unwrap();
+
+    dev.calibrate(Channel::Ch1, cal).await.unwrap();
+
+    assert_eq!(dev.alert(AlertSlot::Three), Some((Channel::Ch2, shunt)));
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn a_failed_disarm_aborts_before_the_range_is_rewritten() {
+    let cal = example_cal();
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x05, 0x05, 0x00]),
+        Transaction::write(ADDR, vec![0x06, 0x01, 0x90]),
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x01]),
+        // the disarm fails; NO CONFIG2 write may follow
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x00]).with_error(ErrorKind::Other),
+    ]);
+
+    dev.calibrate(Channel::Ch1, cal).await.unwrap();
+    let shunt = Alert::ShuntOver(ShuntVoltage::from_nanovolts(1_000_000));
+    dev.set_alert(AlertSlot::One, Channel::Ch1, shunt).await.unwrap();
+
+    assert!(dev.calibrate(Channel::Ch1, cal).await.is_err());
+    assert_eq!(
+        dev.alert(AlertSlot::One),
+        Some((Channel::Ch1, shunt)),
+        "the disarm did not land, so the cache must still show it armed"
+    );
+    dev.release().done();
+}
