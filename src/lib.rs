@@ -423,8 +423,24 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     ///
     /// To poll for conversion completion:
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// # use embedded_hal_mock::eh1::i2c::Mock;
+    /// # use ina4230::{AddrPinState, AddressPins, Ina4230};
+    /// # #[derive(Debug)]
+    /// # struct DocError;
+    /// # impl<E: core::fmt::Debug> From<ina4230::Ina4230Error<E>> for DocError {
+    /// #     fn from(_: ina4230::Ina4230Error<E>) -> Self { DocError }
+    /// # }
+    /// # async fn example() -> Result<(), DocError> {
+    /// # let i2c = Mock::new(&[]);
+    /// # let mut sensor = Ina4230::new(i2c, AddressPins {
+    /// #     a0: AddrPinState::Gnd,
+    /// #     a1: AddrPinState::Gnd,
+    /// # });
     /// while !sensor.read_flags().await?.conversion_ready() {}
+    /// # Ok(())
+    /// # }
+    /// # fn main() { tokio::runtime::Runtime::new().unwrap().block_on(example()).unwrap(); }
     /// ```
     ///
     /// Inspect every returned [`Flags`] if alert information matters: a
