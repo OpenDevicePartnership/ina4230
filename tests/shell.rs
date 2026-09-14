@@ -612,3 +612,16 @@ async fn a_failed_disarm_aborts_before_the_range_is_rewritten() {
     );
     dev.release().done();
 }
+
+#[tokio::test]
+async fn limit_alert_is_indexed_by_slot() {
+    // FLAGS 0x22, bit 13 = LIMIT2_ALERT.
+    let mut dev = sensor(&[Transaction::write_read(ADDR, vec![0x22], vec![0x20, 0x00])]);
+    let flags = dev.read_flags().await.unwrap();
+    assert!(!flags.limit_alert(AlertSlot::One));
+    assert!(flags.limit_alert(AlertSlot::Two));
+    assert!(!flags.limit_alert(AlertSlot::Three));
+    assert!(!flags.limit_alert(AlertSlot::Four));
+    assert_eq!(flags.limit_alerts(), [false, true, false, false]);
+    dev.release().done();
+}

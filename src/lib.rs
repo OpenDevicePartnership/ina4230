@@ -168,6 +168,19 @@ impl Flags {
         self.energy_overflow.iter().any(|&v| v)
     }
 
+    /// Whether `slot`'s alert limit has been exceeded.
+    ///
+    /// The channel this refers to is whichever one the slot's `ALERT_CONFIG`
+    /// selects (datasheet Table 7-8), not one derived from the slot number —
+    /// Table 7-20 describes these flags as independent of channel.
+    ///
+    /// See [`Flags::limit_alerts`] for why a limit flag need not agree with the
+    /// averaged measurement registers.
+    #[must_use]
+    pub const fn limit_alert(self, slot: AlertSlot) -> bool {
+        self.limit_alerts[slot.index()]
+    }
+
     /// The four alert limit flags, ordered `[LIMIT1, LIMIT2, LIMIT3, LIMIT4]`.
     ///
     /// Each flag belongs to an `ALERT_CONFIG` register rather than to a fixed
