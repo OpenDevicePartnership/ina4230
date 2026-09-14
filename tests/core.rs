@@ -10,6 +10,7 @@
 
 use proptest::prelude::*;
 
+use ina4230::AlertSlot;
 use ina4230::convert::{
     channel_bit, decode_bus_voltage, decode_current, decode_energy, decode_power, decode_shunt_voltage, set_channel_bit,
 };
@@ -471,4 +472,16 @@ proptest! {
         let b = Address::from_pins(AddressPins { a0: b0, a1: b1 });
         prop_assert_eq!(a == b, (a0, a1) == (b0, b1));
     }
+}
+
+// ── Alert slots ───────────────────────────────────────────────────────────────
+
+#[test]
+fn alert_slot_indexes_are_zero_based_and_ordered() {
+    assert_eq!(AlertSlot::ALL.len(), 4);
+    for (i, slot) in AlertSlot::ALL.into_iter().enumerate() {
+        assert_eq!(slot.index(), i);
+    }
+    assert_eq!(AlertSlot::One.index(), 0);
+    assert_eq!(AlertSlot::Four.index(), 3);
 }

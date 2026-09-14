@@ -14,9 +14,11 @@ use embedded_sensors_hal_async::sensor;
 #[allow(dead_code)]
 mod device;
 
+pub mod alert;
 pub mod convert;
 pub mod units;
 
+pub use crate::alert::AlertSlot;
 pub use crate::units::{
     AdcRange, AddrPinState, Address, AddressPins, BusVoltage, Calibration, CalibrationError, Channel, Current,
     CurrentLsb, Energy, Power, ShuntCal, ShuntResistance, ShuntVoltage,
