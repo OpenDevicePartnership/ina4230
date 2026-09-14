@@ -223,6 +223,48 @@ async fn reset_clears_cache_even_when_the_write_fails() {
 }
 
 #[tokio::test]
+async fn a_failed_reset_keeps_the_alert_cache_so_a_later_calibrate_still_disarms() {
+    // The alert cache resolves the ambiguity the other way from the
+    // calibration cache. If the RST write did not land, the device still has
+    // slots armed; dropping the cache would leave the next calibrate with
+    // nothing to disarm, and CONFIG2.RANGE would move out from under a live
+    // shunt threshold.
+    let cal = example_cal();
+    let mut dev = sensor(&[
+        // calibrate Ch1
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x05, 0x05, 0x00]),
+        // arm slot 1 with a shunt alert on Ch1: 1 mV / 2.5 uV = 400 = 0x0190
+        Transaction::write(ADDR, vec![0x06, 0x01, 0x90]),
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x01]),
+        // the reset fails
+        Transaction::write(ADDR, vec![0x21, 0x80, 0x00]).with_error(ErrorKind::Other),
+        // recalibrating must still disarm slot 1 BEFORE touching CONFIG2
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x00]),
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x05, 0x05, 0x00]),
+    ]);
+
+    dev.calibrate(Channel::Ch1, cal).await.unwrap();
+    let shunt = Alert::ShuntOver(ShuntVoltage::from_nanovolts(1_000_000));
+    dev.set_alert(AlertSlot::One, Channel::Ch1, shunt).await.unwrap();
+
+    assert!(dev.reset().await.is_err());
+
+    assert_eq!(
+        dev.alert(AlertSlot::One),
+        Some((Channel::Ch1, shunt)),
+        "the reset may not have landed, so the slot may still be armed"
+    );
+
+    dev.calibrate(Channel::Ch1, cal).await.unwrap();
+    assert_eq!(dev.alert(AlertSlot::One), None);
+    dev.release().done();
+}
+
+#[tokio::test]
 async fn calibrate_invalidates_the_channel_when_shunt_cal_fails() {
     // CONFIG2.RANGE lands but SHUNT_CAL does not. Retaining the previous
     // calibration would pair the device's new range with the cache's old one,

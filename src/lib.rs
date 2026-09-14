@@ -336,35 +336,46 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     ///
     /// It also includes every `ALERT_CONFIG`, which returns to a reserved
     /// no-effect `ALERT_MASK`, so the cached per-slot alert configuration is
-    /// discarded for the same reason. [`Ina4230::alert`] reports every slot as
+    /// discarded once the write lands. [`Ina4230::alert`] reports every slot as
     /// disarmed afterwards, which is what the device now is.
     ///
     /// Call [`Ina4230::calibrate`] again before reading shunt voltage, current,
     /// power, or energy.
     ///
-    /// # The cache is cleared before the write, not after
+    /// # The calibration cache is cleared before the write, the alert cache after
     ///
     /// I²C gives no way to learn whether a device acted on a transaction that
     /// failed partway, and a future dropped at an `await` point may still have
-    /// put the write on the wire. Both cases would leave a reset device paired
-    /// with a stale cache, and because a reset zeroes `SHUNT_CAL` the part then
-    /// reports a current of exactly zero (datasheet §8.1.2) — a plausible
-    /// reading rather than an obvious fault.
+    /// put the write on the wire. So after a failure the device may or may not
+    /// have reset, and the two caches want opposite answers to that.
     ///
-    /// Clearing first makes the cache never outlive the device's calibration.
-    /// The cost of clearing unnecessarily is one redundant calibration; the
-    /// cost of not clearing is silently wrong measurements.
+    /// A stale *calibration* is the dangerous direction: a reset zeroes
+    /// `SHUNT_CAL`, so the part reports a current of exactly zero (datasheet
+    /// 8.1.2) - a plausible reading rather than an obvious fault. Clearing
+    /// first makes the cache never outlive the device's calibration. The cost
+    /// of clearing unnecessarily is one redundant calibration; the cost of not
+    /// clearing is silently wrong measurements.
+    ///
+    /// A cleared *alert* cache is the dangerous direction. If the reset did not
+    /// land, slots are still armed on the device while the driver believes they
+    /// are not, so the next [`Ina4230::calibrate`] finds nothing to disarm and
+    /// moves `CONFIG2.RANGE` under a live shunt or power threshold - the
+    /// factor-of-four error the disarming exists to prevent, with no record
+    /// left anywhere. The cache is therefore cleared only once the write
+    /// succeeds. Over-reporting costs at most a few redundant `ALERT_MASK` = 0
+    /// writes to already-cleared registers.
     ///
     /// # Errors
     ///
-    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. The cache is
-    /// cleared either way, so a failed reset always leaves the driver in the
-    /// loud [`Ina4230Error::NotCalibrated`] state rather than a quiet wrong
-    /// one.
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. A failed reset
+    /// always leaves the driver in the loud [`Ina4230Error::NotCalibrated`]
+    /// state rather than a quiet wrong one, and leaves every slot it had armed
+    /// still marked as armed.
     pub async fn reset(&mut self) -> Result<(), Ina4230Error<I2c::Error>> {
         self.calibration = [None; 4];
+        self.device.config_2().write_async(|w| w.set_rst(true)).await?;
         self.alerts = [None; 4];
-        self.device.config_2().write_async(|w| w.set_rst(true)).await
+        Ok(())
     }
 
     /// Read the manufacturer ID register.
