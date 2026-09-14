@@ -15,8 +15,8 @@ use ina4230::convert::{
     channel_bit, decode_bus_voltage, decode_current, decode_energy, decode_power, decode_shunt_voltage, set_channel_bit,
 };
 use ina4230::units::{
-    AdcRange, AddrPinState, Address, AddressPins, Calibration, CalibrationError, Channel, CurrentLsb, ShuntCal,
-    ShuntResistance,
+    AdcRange, AddrPinState, Address, AddressPins, BusVoltage, Calibration, CalibrationError, Channel, Current,
+    CurrentLsb, Energy, Power, ShuntCal, ShuntResistance, ShuntVoltage,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -484,4 +484,18 @@ fn alert_slot_indexes_are_zero_based_and_ordered() {
     }
     assert_eq!(AlertSlot::One.index(), 0);
     assert_eq!(AlertSlot::Four.index(), 3);
+}
+
+// ── Measurement construction ──────────────────────────────────────────────────
+
+#[test]
+fn measurement_types_are_constructible_by_callers() {
+    assert_eq!(ShuntVoltage::from_nanovolts(-80_000_000).as_nanovolts(), -80_000_000);
+    assert_eq!(BusVoltage::from_microvolts(12_000_000).as_microvolts(), 12_000_000);
+    assert_eq!(Current::from_nanoamps(6_000_000_000).as_nanoamps(), 6_000_000_000);
+    assert_eq!(Power::from_nanowatts(72_000_000_000).as_nanowatts(), 72_000_000_000);
+    assert_eq!(
+        Energy::from_nanojoules(259_200_000_000_000).as_nanojoules(),
+        259_200_000_000_000
+    );
 }
