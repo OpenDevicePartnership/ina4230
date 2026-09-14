@@ -307,9 +307,9 @@ device compares each alert limit against *every* conversion rather than
 against the averaged result that reaches the output registers (datasheet
 6.3.5), so with averaging enabled a limit flag can report an excursion that
 appears in no value this crate can read back. That disagreement is correct
-behaviour. It cannot arise through this crate today, because `AVG` is not
-configurable here and the power-on default is a single sample, but it can if
-another controller on the bus has programmed `CONFIG1`.
+behaviour. Configure this trade-off with `ConversionTiming`: averaging can make
+the measurement registers quieter, but it does not filter the samples used for
+limit alerts.
 
 ## Alerts
 
@@ -441,8 +441,6 @@ The following register controls and device protocols are defined by
 
 - **`CONFIG2` alert behaviour**: `CNVR_MASK`, `ENOF_MASK`, `ALERT_LATCH`, and
   `ALERT_POL`.
-- **`CONFIG1` conversion timing**: `AVG`, `VBUSCT`, and `VSHCT`. The power-on
-  defaults are used: one sample and 1.1 ms bus and shunt conversion times.
 - **Energy accumulator reset** (`CONFIG2.ACC_RST`), which also clears the
   energy overflow flags. Until this lands, an energy overflow is unrecoverable
   short of `reset()` and a full recalibration — see "Reading flags".

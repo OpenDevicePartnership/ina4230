@@ -10,9 +10,9 @@ use embedded_hal::i2c::ErrorKind;
 use embedded_hal_mock::eh1::i2c::{Mock, Transaction};
 
 use ina4230::{
-    AdcRange, AddrPinState, AddressPins, Alert, AlertSlot, BusVoltage, Calibration, Channel, CurrentLsb, CurrentSensor,
-    EnergySensor, Ina4230, Ina4230Error, OperatingMode, Power, PowerSensor, ShuntResistance, ShuntVoltage,
-    VoltageSensor,
+    AdcRange, AddrPinState, AddressPins, Alert, AlertSlot, Averaging, BusConversionTime, BusVoltage, Calibration,
+    Channel, ConversionTiming, CurrentLsb, CurrentSensor, EnergySensor, Ina4230, Ina4230Error, OperatingMode, Power,
+    PowerSensor, ShuntConversionTime, ShuntResistance, ShuntVoltage, VoltageSensor,
 };
 
 /// Address for the default strapping, A0 = A1 = GND.
@@ -881,5 +881,350 @@ async fn shutdown_preserves_cached_calibration() {
     dev.set_mode(OperatingMode::Shutdown).await.unwrap();
 
     assert_eq!(dev.calibration(Channel::Ch1), Some(example_cal()));
+    dev.release().done();
+}
+
+// ── Conversion timing ─────────────────────────────────────────────────────────
+
+// CONFIG1 is 0x20, reset 0xF127, and the timing fields are AVG 11:9, VBUSCT 8:6
+// and VSHCT 5:3:
+//
+//   0xF127 = ACTIVE_CHANNEL 0b1111, AVG 0b000, VBUSCT 0b100, VSHCT 0b100,
+//            MODE 0b111
+//
+// Each setter below is therefore a read of 0xF127 followed by a write of the
+// reset word with one field replaced. The reset value cannot witness
+// preservation of AVG, which is 0, so see the `preserves_other_config1_fields`
+// tests for that.
+fn config1_expectations(high: u8, low: u8) -> Vec<Transaction> {
+    vec![
+        Transaction::write_read(ADDR, vec![0x20], vec![0xF1, 0x27]),
+        Transaction::write(ADDR, vec![0x20, high, low]),
+    ]
+}
+
+#[tokio::test]
+async fn conversion_timing_defaults_match_power_on() {
+    // AVG = 0b000, VBUSCT = VSHCT = 0b100, the 0xF127 reset encoding.
+    let timing = ConversionTiming::default();
+    assert_eq!(timing.averaging, Averaging::Samples1);
+    assert_eq!(timing.bus_conversion_time, BusConversionTime::Microseconds1100);
+    assert_eq!(timing.shunt_conversion_time, ShuntConversionTime::Microseconds1100);
+}
+
+#[tokio::test]
+async fn set_conversion_timing_writes_every_averaging_encoding() {
+    // Bus and shunt stay at the reset 1100 µs, so the word is
+    // (0xF127 & !0x0E00) | n << 9 = 0xF127 | n << 9.
+    let cases = [
+        (Averaging::Samples1, 0xF1u8),
+        (Averaging::Samples4, 0xF3),
+        (Averaging::Samples16, 0xF5),
+        (Averaging::Samples64, 0xF7),
+        (Averaging::Samples128, 0xF9),
+        (Averaging::Samples256, 0xFB),
+        (Averaging::Samples512, 0xFD),
+        (Averaging::Samples1024, 0xFF),
+    ];
+
+    for (averaging, high) in cases {
+        // Encoding 0 must still write: every CONFIG1 write clears CVRF and
+        // retriggers a triggered mode, so it is never suppressed as redundant.
+        let mut dev = sensor(&config1_expectations(high, 0x27));
+        dev.set_conversion_timing(ConversionTiming {
+            averaging,
+            ..ConversionTiming::default()
+        })
+        .await
+        .unwrap();
+        dev.release().done();
+    }
+}
+
+#[tokio::test]
+async fn set_conversion_timing_writes_every_bus_time_encoding() {
+    // AVG and shunt stay at their defaults, so the word is
+    // (0xF127 & !0x01C0) | n << 6 = 0xF027 | n << 6.
+    let cases = [
+        (BusConversionTime::Microseconds140, 0xF0u8, 0x27u8),
+        (BusConversionTime::Microseconds204, 0xF0, 0x67),
+        (BusConversionTime::Microseconds332, 0xF0, 0xA7),
+        (BusConversionTime::Microseconds588, 0xF0, 0xE7),
+        (BusConversionTime::Microseconds1100, 0xF1, 0x27),
+        (BusConversionTime::Microseconds2116, 0xF1, 0x67),
+        (BusConversionTime::Microseconds4156, 0xF1, 0xA7),
+        (BusConversionTime::Microseconds8244, 0xF1, 0xE7),
+    ];
+
+    for (bus_conversion_time, high, low) in cases {
+        let mut dev = sensor(&config1_expectations(high, low));
+        dev.set_conversion_timing(ConversionTiming {
+            bus_conversion_time,
+            ..ConversionTiming::default()
+        })
+        .await
+        .unwrap();
+        dev.release().done();
+    }
+}
+
+#[tokio::test]
+async fn set_conversion_timing_writes_every_shunt_time_encoding() {
+    // AVG and bus stay at their defaults, so the word is
+    // (0xF127 & !0x0038) | n << 3 = 0xF107 | n << 3.
+    let cases = [
+        (ShuntConversionTime::Microseconds140, 0x07u8),
+        (ShuntConversionTime::Microseconds204, 0x0F),
+        (ShuntConversionTime::Microseconds332, 0x17),
+        (ShuntConversionTime::Microseconds588, 0x1F),
+        (ShuntConversionTime::Microseconds1100, 0x27),
+        (ShuntConversionTime::Microseconds2116, 0x2F),
+        (ShuntConversionTime::Microseconds4156, 0x37),
+        (ShuntConversionTime::Microseconds8244, 0x3F),
+    ];
+
+    for (shunt_conversion_time, low) in cases {
+        let mut dev = sensor(&config1_expectations(0xF1, low));
+        dev.set_conversion_timing(ConversionTiming {
+            shunt_conversion_time,
+            ..ConversionTiming::default()
+        })
+        .await
+        .unwrap();
+        dev.release().done();
+    }
+}
+
+#[tokio::test]
+async fn set_conversion_timing_preserves_other_config1_fields() {
+    // The same deliberately non-default CONFIG1 the operating-mode tests use,
+    // in which every field is non-zero and distinct:
+    //
+    //   ACTIVE_CHANNEL 15:12 = 0b1010 = 0xA << 12 = 0xA000
+    //   AVG            11:9  = 0b011  = 3   << 9  = 0x0600
+    //   VBUSCT          8:6  = 0b110  = 6   << 6  = 0x0180
+    //   VSHCT           5:3  = 0b001  = 1   << 3  = 0x0008
+    //   MODE            2:0  = 0b100  = 4         = 0x0004
+    //                                            -> 0xA78C
+    //
+    // Setting AVG = 5, VBUSCT = 2 and VSHCT = 7 must move bits 11:3 only:
+    // preserved 0xA004, plus 0x0A00 | 0x0080 | 0x0038 = 0xAABC. Writing a
+    // freshly defaulted CONFIG1 instead would yield 0xFABC.
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x20], vec![0xA7, 0x8C]),
+        Transaction::write(ADDR, vec![0x20, 0xAA, 0xBC]),
+    ]);
+    dev.set_conversion_timing(ConversionTiming {
+        averaging: Averaging::Samples256,
+        bus_conversion_time: BusConversionTime::Microseconds332,
+        shunt_conversion_time: ShuntConversionTime::Microseconds8244,
+    })
+    .await
+    .unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn conversion_timing_reads_every_encoding() {
+    // All three fields set to the same encoding n, so the word is
+    // 0xF007 + n * (0x0200 + 0x0040 + 0x0008) = 0xF007 + n * 0x0248.
+    let expected = [
+        (
+            [0xF0u8, 0x07u8],
+            Averaging::Samples1,
+            BusConversionTime::Microseconds140,
+            ShuntConversionTime::Microseconds140,
+        ),
+        (
+            [0xF2, 0x4F],
+            Averaging::Samples4,
+            BusConversionTime::Microseconds204,
+            ShuntConversionTime::Microseconds204,
+        ),
+        (
+            [0xF4, 0x97],
+            Averaging::Samples16,
+            BusConversionTime::Microseconds332,
+            ShuntConversionTime::Microseconds332,
+        ),
+        (
+            [0xF6, 0xDF],
+            Averaging::Samples64,
+            BusConversionTime::Microseconds588,
+            ShuntConversionTime::Microseconds588,
+        ),
+        (
+            [0xF9, 0x27],
+            Averaging::Samples128,
+            BusConversionTime::Microseconds1100,
+            ShuntConversionTime::Microseconds1100,
+        ),
+        (
+            [0xFB, 0x6F],
+            Averaging::Samples256,
+            BusConversionTime::Microseconds2116,
+            ShuntConversionTime::Microseconds2116,
+        ),
+        (
+            [0xFD, 0xB7],
+            Averaging::Samples512,
+            BusConversionTime::Microseconds4156,
+            ShuntConversionTime::Microseconds4156,
+        ),
+        (
+            [0xFF, 0xFF],
+            Averaging::Samples1024,
+            BusConversionTime::Microseconds8244,
+            ShuntConversionTime::Microseconds8244,
+        ),
+    ];
+
+    let expectations: Vec<_> = expected
+        .iter()
+        .map(|&(word, ..)| Transaction::write_read(ADDR, vec![0x20], word.to_vec()))
+        .collect();
+
+    let mut dev = sensor(&expectations);
+    for (word, averaging, bus_conversion_time, shunt_conversion_time) in expected {
+        assert_eq!(
+            dev.conversion_timing().await.unwrap(),
+            ConversionTiming {
+                averaging,
+                bus_conversion_time,
+                shunt_conversion_time,
+            },
+            "word 0x{:02X}{:02X}",
+            word[0],
+            word[1]
+        );
+    }
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_averaging_writes_every_encoding() {
+    // AVG is bits 11:9, and the reset word already holds 0, so the write is
+    // (0xF127 & !0x0E00) | n << 9 = 0xF127 | n << 9.
+    let cases = [
+        (Averaging::Samples1, 0xF1u8),
+        (Averaging::Samples4, 0xF3),
+        (Averaging::Samples16, 0xF5),
+        (Averaging::Samples64, 0xF7),
+        (Averaging::Samples128, 0xF9),
+        (Averaging::Samples256, 0xFB),
+        (Averaging::Samples512, 0xFD),
+        (Averaging::Samples1024, 0xFF),
+    ];
+
+    for (averaging, high) in cases {
+        // Encoding 0 is the unchanged-value case and must still write.
+        let mut dev = sensor(&config1_expectations(high, 0x27));
+        dev.set_averaging(averaging).await.unwrap();
+        dev.release().done();
+    }
+}
+
+#[tokio::test]
+async fn set_bus_conversion_time_writes_every_encoding() {
+    // VBUSCT is bits 8:6, so the write is
+    // (0xF127 & !0x01C0) | n << 6 = 0xF027 | n << 6.
+    let cases = [
+        (BusConversionTime::Microseconds140, 0xF0u8, 0x27u8),
+        (BusConversionTime::Microseconds204, 0xF0, 0x67),
+        (BusConversionTime::Microseconds332, 0xF0, 0xA7),
+        (BusConversionTime::Microseconds588, 0xF0, 0xE7),
+        (BusConversionTime::Microseconds1100, 0xF1, 0x27),
+        (BusConversionTime::Microseconds2116, 0xF1, 0x67),
+        (BusConversionTime::Microseconds4156, 0xF1, 0xA7),
+        (BusConversionTime::Microseconds8244, 0xF1, 0xE7),
+    ];
+
+    for (conversion_time, high, low) in cases {
+        // Encoding 4 is the unchanged-value case and must still write.
+        let mut dev = sensor(&config1_expectations(high, low));
+        dev.set_bus_conversion_time(conversion_time).await.unwrap();
+        dev.release().done();
+    }
+}
+
+#[tokio::test]
+async fn set_shunt_conversion_time_writes_every_encoding() {
+    // VSHCT is bits 5:3, so the write is
+    // (0xF127 & !0x0038) | n << 3 = 0xF107 | n << 3.
+    let cases = [
+        (ShuntConversionTime::Microseconds140, 0x07u8),
+        (ShuntConversionTime::Microseconds204, 0x0F),
+        (ShuntConversionTime::Microseconds332, 0x17),
+        (ShuntConversionTime::Microseconds588, 0x1F),
+        (ShuntConversionTime::Microseconds1100, 0x27),
+        (ShuntConversionTime::Microseconds2116, 0x2F),
+        (ShuntConversionTime::Microseconds4156, 0x37),
+        (ShuntConversionTime::Microseconds8244, 0x3F),
+    ];
+
+    for (conversion_time, low) in cases {
+        // Encoding 4 is the unchanged-value case and must still write.
+        let mut dev = sensor(&config1_expectations(0xF1, low));
+        dev.set_shunt_conversion_time(conversion_time).await.unwrap();
+        dev.release().done();
+    }
+}
+
+#[tokio::test]
+async fn set_averaging_preserves_other_config1_fields_and_round_trips() {
+    // From the distinctive 0xA78C (ACTIVE 10, AVG 3, VBUSCT 6, VSHCT 1,
+    // MODE 4), setting AVG = 5 must move bits 11:9 only:
+    // (0xA78C & !0x0E00) | 5 << 9 = 0xA18C | 0x0A00 = 0xAB8C. The unchanged
+    // ACTIVE, VBUSCT, VSHCT and MODE make neighbouring-field clobbering
+    // observable.
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x20], vec![0xA7, 0x8C]),
+        Transaction::write(ADDR, vec![0x20, 0xAB, 0x8C]),
+        Transaction::write_read(ADDR, vec![0x20], vec![0xAB, 0x8C]),
+    ]);
+    dev.set_averaging(Averaging::Samples256).await.unwrap();
+    assert_eq!(dev.averaging().await.unwrap(), Averaging::Samples256);
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_bus_conversion_time_preserves_other_config1_fields_and_round_trips() {
+    // From the same 0xA78C, setting VBUSCT = 2 must move bits 8:6 only:
+    // (0xA78C & !0x01C0) | 2 << 6 = 0xA60C | 0x0080 = 0xA68C. The unchanged
+    // ACTIVE, AVG, VSHCT and MODE make neighbouring-field clobbering
+    // observable.
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x20], vec![0xA7, 0x8C]),
+        Transaction::write(ADDR, vec![0x20, 0xA6, 0x8C]),
+        Transaction::write_read(ADDR, vec![0x20], vec![0xA6, 0x8C]),
+    ]);
+    dev.set_bus_conversion_time(BusConversionTime::Microseconds332)
+        .await
+        .unwrap();
+    assert_eq!(
+        dev.bus_conversion_time().await.unwrap(),
+        BusConversionTime::Microseconds332
+    );
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_shunt_conversion_time_preserves_other_config1_fields_and_round_trips() {
+    // From the same 0xA78C, setting VSHCT = 7 must move bits 5:3 only:
+    // (0xA78C & !0x0038) | 7 << 3 = 0xA784 | 0x0038 = 0xA7BC. The unchanged
+    // ACTIVE, AVG, VBUSCT and MODE make neighbouring-field clobbering
+    // observable.
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x20], vec![0xA7, 0x8C]),
+        Transaction::write(ADDR, vec![0x20, 0xA7, 0xBC]),
+        Transaction::write_read(ADDR, vec![0x20], vec![0xA7, 0xBC]),
+    ]);
+    dev.set_shunt_conversion_time(ShuntConversionTime::Microseconds8244)
+        .await
+        .unwrap();
+    assert_eq!(
+        dev.shunt_conversion_time().await.unwrap(),
+        ShuntConversionTime::Microseconds8244
+    );
     dev.release().done();
 }
