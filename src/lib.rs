@@ -418,6 +418,111 @@ impl From<device::ShuntConversionTime> for ShuntConversionTime {
     }
 }
 
+// ── ALERT pin configuration ───────────────────────────────────────────────────
+
+/// The ALERT pin polarity selected by `CONFIG2.ALERT_POL` (datasheet
+/// Table 7-4).
+///
+/// The ALERT pin is open-drain (datasheet 6.3.5), so the board must provide a
+/// suitable pull-up or bias arrangement; this field picks which direction the
+/// pin moves when a fault asserts, not whether the output is driven both ways.
+/// Choosing [`AlertPolarity::ActiveHigh`] does not make the output push-pull.
+///
+/// [`Default`] is [`AlertPolarity::ActiveLow`], the power-on value.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum AlertPolarity {
+    /// `0` — the pin is driven high-to-low on assertion. The power-on default.
+    #[default]
+    ActiveLow = 0,
+    /// `1` — the pin moves low-to-high on assertion.
+    ActiveHigh = 1,
+}
+
+/// The ALERT pin latch behavior selected by `CONFIG2.ALERT_LATCH` (datasheet
+/// Table 7-4).
+///
+/// [`Default`] is [`AlertLatch::Transparent`], the power-on value.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum AlertLatch {
+    /// `0` — the pin deasserts as soon as the fault condition goes away. The
+    /// power-on default.
+    #[default]
+    Transparent = 0,
+    /// `1` — a fault assertion is held until it is explicitly released.
+    ///
+    /// Releasing it requires **both** reading `FLAGS` through
+    /// [`Ina4230::read_flags`] *and* the fault condition having gone away
+    /// (datasheet 7.1.2, bit 5). Reading the flags on its own is not enough
+    /// while the condition persists.
+    Latched = 1,
+}
+
+/// The device-global ALERT pin configuration, `CONFIG2` bits 7:4.
+///
+/// One value groups all four controls: [`polarity`](Self::polarity)
+/// (`ALERT_POL`, bit 4), [`latch`](Self::latch) (`ALERT_LATCH`, bit 5),
+/// [`on_energy_overflow`](Self::on_energy_overflow) (`ENOF_MASK`, bit 6), and
+/// [`on_conversion_ready`](Self::on_conversion_ready) (`CNVR_MASK`, bit 7).
+/// These apply to the part as a whole, not per channel.
+///
+/// [`Default`] is the literal `CONFIG2` reset state `0x0000` — active-low,
+/// transparent, neither extra source routed to the pin — and is reported as
+/// such rather than as a recommendation for any particular application.
+///
+/// # Conversion ready is orthogonal to the alert slots
+///
+/// `CNVR_MASK` does not occupy, arm, or disarm any of the four alert slots
+/// configured through [`Ina4230::set_alert`] and [`Ina4230::clear_alert`], so
+/// conversion completion can be monitored on the pin alongside one slot
+/// condition. The same completion is observable in software through
+/// [`Flags::conversion_ready`] and [`Ina4230::read_flags`], which is the usual
+/// pairing for the triggered variants of [`OperatingMode`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct AlertPinConfig {
+    /// `CONFIG2.ALERT_POL`, bit 4 — which direction the pin moves when a fault
+    /// asserts.
+    pub polarity: AlertPolarity,
+    /// `CONFIG2.ALERT_LATCH`, bit 5 — whether a fault assertion is held or
+    /// tracks the condition.
+    pub latch: AlertLatch,
+    /// `CONFIG2.CNVR_MASK`, bit 7 — also assert ALERT when a conversion
+    /// completes.
+    ///
+    /// The pin stays asserted until `CVRF` is read through
+    /// [`Ina4230::read_flags`], regardless of [`latch`](Self::latch).
+    pub on_conversion_ready: bool,
+    /// `CONFIG2.ENOF_MASK`, bit 6 — also assert ALERT when any enabled
+    /// channel's energy accumulator overflows.
+    ///
+    /// This selects no particular channel and clears nothing: the sticky
+    /// overflow condition reported by [`Flags::energy_overflow`] and
+    /// [`Flags::any_energy_overflow`] is unaffected by this API.
+    pub on_energy_overflow: bool,
+}
+
+impl From<AlertPolarity> for device::AlertPolarity {
+    fn from(polarity: AlertPolarity) -> Self {
+        match polarity {
+            AlertPolarity::ActiveLow => Self::ActiveLow,
+            AlertPolarity::ActiveHigh => Self::ActiveHigh,
+        }
+    }
+}
+
+impl From<device::AlertPolarity> for AlertPolarity {
+    fn from(polarity: device::AlertPolarity) -> Self {
+        match polarity {
+            device::AlertPolarity::ActiveLow => Self::ActiveLow,
+            device::AlertPolarity::ActiveHigh => Self::ActiveHigh,
+        }
+    }
+}
+
 // ── Flags ─────────────────────────────────────────────────────────────────────
 
 /// A snapshot of the `FLAGS` register.
@@ -444,6 +549,12 @@ impl Flags {
     /// [`ConversionTiming`] sets how long that takes: the flag is set once per
     /// averaged round-robin cycle, and any `CONFIG1` write — including
     /// [`Ina4230::set_conversion_timing`] — clears it again.
+    ///
+    /// The same completion can be routed to the ALERT pin with
+    /// [`AlertPinConfig::on_conversion_ready`], which is the hardware
+    /// counterpart to polling this flag and is most useful with the triggered
+    /// variants of [`OperatingMode`]. The pin stays asserted until `CVRF` is
+    /// read here, so [`Ina4230::read_flags`] is still what releases it.
     #[must_use]
     pub const fn conversion_ready(self) -> bool {
         self.conversion_ready
@@ -723,6 +834,12 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// way to poll `CVRF` without reading the other flags at the same time,
     /// which is why this returns the whole register rather than offering
     /// per-bit accessors that would discard the rest of the snapshot.
+    ///
+    /// When [`AlertLatch::Latched`] is selected through
+    /// [`Ina4230::set_alert_pin_config`], this read is one of the two things a
+    /// latched ALERT assertion needs in order to release: the fault condition
+    /// must also have gone away. See [`Ina4230::alert_pin_config`] for the
+    /// current setting.
     ///
     /// The datasheet does not specify the math-overflow or energy-overflow
     /// bits as read-to-clear; energy overflow is cleared through
@@ -1117,6 +1234,82 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
         self.device
             .config_1()
             .modify_async(|w| w.set_vshct(conversion_time.into()))
+            .await
+    }
+
+    // ── ALERT pin configuration ───────────────────────────────────────────────
+
+    /// Read `CONFIG2` bits 7:4 as an [`AlertPinConfig`].
+    ///
+    /// All four controls come from a single register read, so they are a
+    /// coherent snapshot.
+    ///
+    /// Unlike [`Ina4230::calibration`], this is not cached: pin configuration
+    /// is never needed to interpret a reading, so there is nothing to gain
+    /// from holding a copy and something to lose. Reading the device instead
+    /// means the result reflects a power cycle, an EN-pin toggle, a General
+    /// Call reset, [`Ina4230::reset`], or a write by another bus controller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs.
+    pub async fn alert_pin_config(&mut self) -> Result<AlertPinConfig, Ina4230Error<I2c::Error>> {
+        let r = self.device.config_2().read_async().await?;
+        Ok(AlertPinConfig {
+            polarity: r.alert_pol().into(),
+            latch: if r.alert_latch() {
+                AlertLatch::Latched
+            } else {
+                AlertLatch::Transparent
+            },
+            on_conversion_ready: r.cnvr_mask(),
+            on_energy_overflow: r.enof_mask(),
+        })
+    }
+
+    /// Set `CONFIG2.CNVR_MASK`, `ENOF_MASK`, `ALERT_LATCH`, and `ALERT_POL`
+    /// together.
+    ///
+    /// Performs a single read-modify-write of `CONFIG2`, so only bits 7:4
+    /// move. In particular `RANGE`, bits 3:0, is written back exactly as it
+    /// was read: it belongs to [`Ina4230::calibrate`], and overwriting it would
+    /// silently rescale every subsequent current and power reading while the
+    /// cached calibration still claimed the old scale.
+    ///
+    /// The other two `CONFIG2` fields are write-one command bits that the
+    /// hardware self-clears — `RST`, bit 15, and `ACC_RST`, bits 11:8
+    /// (datasheet Table 7-4). They therefore read back as zero, and the zeroes
+    /// this read-modify-write sends back cannot retrigger a device reset or an
+    /// accumulator reset.
+    ///
+    /// The write is always issued, even when the requested configuration is
+    /// the one the device already holds; nothing is suppressed as redundant.
+    ///
+    /// # Latched alerts need a flags read *and* a clear condition
+    ///
+    /// With [`AlertLatch::Latched`], releasing an asserted pin requires both
+    /// reading `FLAGS` through [`Ina4230::read_flags`] and the fault condition
+    /// having gone away. With [`AlertPinConfig::on_conversion_ready`] set, the
+    /// pin likewise stays asserted until `CVRF` is read there — which pairs
+    /// naturally with the triggered variants of [`OperatingMode`], where the
+    /// pin signals that a sequence started by [`Ina4230::set_mode`] is done.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. A failed read
+    /// aborts before anything is written; a failed write leaves the device's
+    /// pin configuration unknown, since I²C gives no way to learn whether the
+    /// device acted on the transaction. Neither case disturbs the cached
+    /// calibration, which stays valid because `RANGE` is never altered here.
+    pub async fn set_alert_pin_config(&mut self, config: AlertPinConfig) -> Result<(), Ina4230Error<I2c::Error>> {
+        self.device
+            .config_2()
+            .modify_async(|w| {
+                w.set_cnvr_mask(config.on_conversion_ready);
+                w.set_enof_mask(config.on_energy_overflow);
+                w.set_alert_latch(matches!(config.latch, AlertLatch::Latched));
+                w.set_alert_pol(config.polarity.into());
+            })
             .await
     }
 
