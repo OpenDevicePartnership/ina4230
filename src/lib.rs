@@ -569,18 +569,13 @@ impl Flags {
 
     /// The energy accumulator for `channel` has overflowed.
     ///
-    /// # This crate cannot clear it
-    ///
-    /// The bit is not read-to-clear. The datasheet clears it only through
-    /// `CONFIG2.ACC_RST` (Table 7-4, bits 11-8), which this crate does not
-    /// expose yet, so the flag stays set and the accumulator keeps returning
-    /// a wrapped value for as long as the driver lives.
-    ///
-    /// The only recovery available here is [`Ina4230::reset`], which restores
-    /// every register to its default. That zeroes `SHUNT_CAL`, so the channel
-    /// must be recalibrated afterwards or it reports zero current forever
-    /// (datasheet 8.1.2). Treat an energy overflow as "reset and recalibrate",
-    /// not as something a subsequent read clears.
+    /// This sticky bit is not read-to-clear, and the corresponding energy
+    /// reading has wrapped. Clear both the channel's accumulator and this flag
+    /// with [`Ina4230::reset_energy_accumulators`]. That targeted command
+    /// preserves `SHUNT_CAL`, `CONFIG2.RANGE`, the other channels'
+    /// accumulators, and alert configuration, so it does not require
+    /// recalibration. A previously returned [`Flags`] remains a snapshot of
+    /// the state observed before the reset.
     #[must_use]
     pub const fn energy_overflow(self, channel: Channel) -> bool {
         self.energy_overflow[channel.index()]
@@ -588,8 +583,8 @@ impl Flags {
 
     /// Any channel's energy accumulator has overflowed.
     ///
-    /// See [`Flags::energy_overflow`] for why this condition is sticky and
-    /// what clearing it costs.
+    /// See [`Flags::energy_overflow`] for the sticky-bit semantics and the
+    /// targeted reset command.
     #[must_use]
     pub fn any_energy_overflow(self) -> bool {
         self.energy_overflow.iter().any(|&v| v)
@@ -681,6 +676,15 @@ impl<T: PowerSensor + ?Sized> PowerSensor for &mut T {
 pub trait EnergySensor: sensor::ErrorType {
     /// Read the accumulated energy for the given channel.
     /// Requires [`Ina4230::calibrate`] to have been called first.
+    ///
+    /// The accumulator is 32 bits wide and wraps silently; only
+    /// [`Flags::energy_overflow`], read through [`Ina4230::read_flags`],
+    /// reports that it did. This method never reads `FLAGS` itself, so it adds
+    /// no side effects and no extra bus traffic. Start a fresh integration
+    /// interval, and clear the sticky overflow flag with it, using
+    /// [`Ina4230::reset_energy_accumulators`]; a read taken immediately
+    /// afterwards is near zero rather than exactly zero, because conversions
+    /// can resume accumulating before the read lands.
     async fn energy(&mut self, channel: Channel) -> Result<Energy, Self::Error>;
 }
 
@@ -847,9 +851,10 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// across reads, but each returned [`Flags`] value is still the only
     /// record the caller gets of that particular snapshot.
     ///
-    /// `CONFIG2.ACC_RST` is not exposed by this crate, so an energy overflow
-    /// cannot be cleared short of [`Ina4230::reset`] and a recalibration. See
-    /// [`Flags::energy_overflow`].
+    /// Clear a channel's sticky energy-overflow bit together with its
+    /// accumulator through [`Ina4230::reset_energy_accumulators`]; unlike
+    /// [`Ina4230::reset`], that targeted command preserves calibration and the
+    /// other channels. See [`Flags::energy_overflow`].
     ///
     /// To poll for conversion completion — which is also how to wait for a
     /// conversion started by
@@ -1235,6 +1240,86 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
             .config_1()
             .modify_async(|w| w.set_vshct(conversion_time.into()))
             .await
+    }
+
+    // ── Energy accumulator reset ──────────────────────────────────────────────
+
+    /// Reset the energy accumulators for `channels` with one
+    /// `CONFIG2.ACC_RST` command.
+    ///
+    /// `channels` may name any subset of the four channels in any order.
+    /// Duplicates are ignored, and an empty slice is an `Ok(())` no-op that
+    /// does not touch the bus at all. Pass `&Channel::ALL` to clear all four.
+    ///
+    /// # This is a command, not a setting
+    ///
+    /// The selected `ACC_RST` bits are written as one and the hardware clears
+    /// them again (datasheet Table 7-4, bits 11:8), so there is nothing to
+    /// read back and this crate deliberately offers no getter. Each selected
+    /// channel's 32-bit `ENERGY` accumulator returns to zero and its sticky
+    /// [`Flags::energy_overflow`] condition is cleared as a hardware side
+    /// effect, observable on the next [`Ina4230::read_flags`]. A [`Flags`]
+    /// value returned earlier is a historical snapshot and does not change.
+    /// Unselected channels keep both their totals and their flags.
+    ///
+    /// # Only bits 11:8 move
+    ///
+    /// One read-modify-write of `CONFIG2` carries the command, so `RANGE`,
+    /// bits 3:0, and the ALERT pin bits 7:4 are written back exactly as they
+    /// were read. `RANGE` belongs to [`Ina4230::calibrate`] and overwriting it
+    /// would silently rescale every subsequent current, power and energy
+    /// reading while the cached calibration still claimed the old scale; bits
+    /// 7:4 belong to [`Ina4230::set_alert_pin_config`].
+    ///
+    /// # Not a device reset
+    ///
+    /// Unlike [`Ina4230::reset`], this preserves `SHUNT_CAL`, the cached
+    /// calibration, the other channels' accumulators, and the alert
+    /// configuration, so no recalibration follows. A full [`Ina4230::reset`]
+    /// restores every register to its default, and that zeroes `SHUNT_CAL`,
+    /// which makes the device report zero current forever until
+    /// [`Ina4230::calibrate`] runs again (datasheet 8.1.2).
+    ///
+    /// # Sizing `CURRENT_LSB` against the accumulator
+    ///
+    /// `ENERGY` is an unsigned 32-bit accumulator whose LSB is
+    /// `32 × CURRENT_LSB` joules (datasheet 8.1.2, Equation 5). To avoid a
+    /// wrap for a time `t` at worst-case power `P`, choose
+    /// `CURRENT_LSB >= P × t / (2^32 × 32)` and also satisfy the current-range
+    /// requirement of Equation 2.
+    ///
+    /// For a rail that can draw 2 A at 48 V (`P = 96 W`) and must run for 24 h
+    /// (`t = 86,400 s`), the duration floor is
+    /// `96 × 86,400 / (4,294,967,296 × 32) = 0.0000603497 A/LSB`, or
+    /// 60,350 nA/LSB after rounding up. The current-range floor is
+    /// `2 A / 32,768 = 0.0000610352 A/LSB`, or 61,036 nA/LSB after rounding
+    /// up. Take the larger floor and round up conveniently:
+    /// [`CurrentLsb::from_nanoamps`]`(62_500)` gives an energy LSB of
+    /// `32 × 62,500 nJ = 2,000,000 nJ = 0.002 J`. A full `2^32`-count cycle
+    /// then represents `4,294,967,296 × 0.002 J = 8,589,934.592 J`, which at
+    /// 96 W takes `8,589,934.592 / 96 = 89,478.4853 s = 24.8551 h` before
+    /// wrapping. It also gives a maximum positive current of
+    /// `32,767 × 62,500 nA = 2.0479375 A`, enough for the stated 2 A maximum.
+    /// Leave margin for load uncertainty. Resetting periodically starts a new
+    /// integration interval, but discards the prior hardware total — see
+    /// [`EnergySensor::energy`] and [`Flags::any_energy_overflow`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. A failed read
+    /// aborts before anything is written, so no accumulator is cleared. After
+    /// a failed write it is unknown whether the command reached the device,
+    /// since I²C gives no way to learn whether the device acted on the
+    /// transaction; a retry resets again and discards any energy accumulated
+    /// since an attempt that succeeded but was reported as failed. Neither
+    /// case disturbs the cached calibration or alert slots.
+    pub async fn reset_energy_accumulators(&mut self, channels: &[Channel]) -> Result<(), Ina4230Error<I2c::Error>> {
+        let mask = channels.iter().fold(0u8, |acc, channel| acc | channel.mask());
+        if mask == 0 {
+            return Ok(());
+        }
+
+        self.device.config_2().modify_async(|w| w.set_acc_rst(mask)).await
     }
 
     // ── ALERT pin configuration ───────────────────────────────────────────────

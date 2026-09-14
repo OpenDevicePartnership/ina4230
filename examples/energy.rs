@@ -13,9 +13,9 @@
 //! on every poll rather than looking at one bit and discarding the others.
 //!
 //! Energy overflow is *not* read-to-clear: it persists in the device until
-//! `CONFIG2.ACC_RST` is written. That register field has no high-level API
-//! yet, so once the accumulator wraps, the only way to clear it from this
-//! crate is [`Ina4230::reset`], which also discards the calibration.
+//! `CONFIG2.ACC_RST` is written. [`Ina4230::reset_energy_accumulators`] is
+//! that command, and unlike [`Ina4230::reset`] it preserves the calibration,
+//! so this example recovers from a wrap and carries on from a fresh baseline.
 //!
 //! # Wiring
 //!
@@ -145,7 +145,17 @@ async fn main() {
         }
         if flags.energy_overflow(Channel::Ch1) {
             eprintln!("warning: energy accumulator overflowed and has wrapped");
-            eprintln!("         clearing needs CONFIG2.ACC_RST, which this crate does not expose yet");
+            eprintln!("         clearing it and starting a new integration interval");
+
+            // Clears the accumulator and the sticky flag in one CONFIG2 write,
+            // leaving SHUNT_CAL and the cached calibration alone. The next
+            // delta would be meaningless against the pre-reset total, so drop
+            // the baseline too.
+            sensor
+                .reset_energy_accumulators(&[Channel::Ch1])
+                .await
+                .expect("energy accumulator reset failed");
+            previous = None;
         }
         if !flags.conversion_ready() {
             continue;
