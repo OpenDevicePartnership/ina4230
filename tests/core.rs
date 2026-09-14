@@ -11,6 +11,7 @@
 use proptest::prelude::*;
 
 use ina4230::AlertSlot;
+use ina4230::convert;
 use ina4230::convert::{
     channel_bit, decode_bus_voltage, decode_current, decode_energy, decode_power, decode_shunt_voltage, set_channel_bit,
 };
@@ -498,4 +499,130 @@ fn measurement_types_are_constructible_by_callers() {
         Energy::from_nanojoules(259_200_000_000_000).as_nanojoules(),
         259_200_000_000_000
     );
+}
+
+// ── Limit encoding ────────────────────────────────────────────────────────────
+
+#[test]
+fn shunt_limit_matches_the_datasheet_worked_example() {
+    // Datasheet 7.1.6: -80 mV / 2.5 uV = 32000, two's complement 0x8300.
+    let v = ShuntVoltage::from_nanovolts(-80_000_000);
+    let raw = convert::encode_shunt_limit(v, AdcRange::Range0).unwrap();
+    assert_eq!(raw, -32_000);
+    assert_eq!(raw.cast_unsigned(), 0x8300);
+}
+
+#[test]
+fn shunt_limit_round_trips_every_representable_code() {
+    for range in [AdcRange::Range0, AdcRange::Range1] {
+        for raw in i16::MIN..=i16::MAX {
+            let decoded = convert::decode_shunt_voltage(raw, range);
+            assert_eq!(
+                convert::encode_shunt_limit(decoded, range),
+                Some(raw),
+                "raw {raw} at {range:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn shunt_limit_rejects_values_beyond_full_scale() {
+    // Range0 full scale is -81.92 mV ..= 81.9175 mV.
+    assert!(convert::encode_shunt_limit(ShuntVoltage::from_nanovolts(81_920_000), AdcRange::Range0).is_none());
+    assert!(convert::encode_shunt_limit(ShuntVoltage::from_nanovolts(-81_922_501), AdcRange::Range0).is_none());
+    // The same value is comfortably out of range on the 4x finer Range1.
+    assert!(convert::encode_shunt_limit(ShuntVoltage::from_nanovolts(40_000_000), AdcRange::Range1).is_none());
+}
+
+#[test]
+fn shunt_limit_rounds_to_nearest_away_from_zero() {
+    let enc = |nv| convert::encode_shunt_limit(ShuntVoltage::from_nanovolts(nv), AdcRange::Range0);
+    assert_eq!(enc(2_500), Some(1)); // exact
+    assert_eq!(enc(3_749), Some(1)); // below the halfway point
+    assert_eq!(enc(3_750), Some(2)); // exactly halfway, away from zero
+    assert_eq!(enc(-3_750), Some(-2));
+    assert_eq!(enc(-3_749), Some(-1));
+}
+
+proptest! {
+    /// Range violation is the only failure mode, and there is no panic for any
+    /// `i32` a caller can construct.
+    #[test]
+    fn shunt_limit_never_panics(nv in i32::MIN..=i32::MAX) {
+        for range in [AdcRange::Range0, AdcRange::Range1] {
+            let v = ShuntVoltage::from_nanovolts(nv);
+            if let Some(raw) = convert::encode_shunt_limit(v, range) {
+                // Anything accepted must decode back to within half an LSB.
+                let back = convert::decode_shunt_voltage(raw, range).as_nanovolts();
+                let lsb = range.shunt_lsb_nv();
+                prop_assert!((i64::from(back) - i64::from(nv)).abs() <= i64::from(lsb) / 2 + 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn bus_limit_round_trips_every_representable_code() {
+    // The limit is unsigned 15-bit (datasheet 7.1.5), so only 0..=0x7FFF.
+    for raw in 0..=0x7FFFu16 {
+        let decoded = convert::decode_bus_voltage(raw);
+        assert_eq!(convert::encode_bus_limit(decoded), Some(raw), "raw {raw}");
+    }
+}
+
+#[test]
+fn bus_limit_full_scale_is_the_adc_range() {
+    // 32767 * 1.6 mV = 52.4272 V, exactly the range given in datasheet 8.1.1.
+    assert_eq!(
+        convert::encode_bus_limit(BusVoltage::from_microvolts(52_427_200)),
+        Some(0x7FFF)
+    );
+    assert!(convert::encode_bus_limit(BusVoltage::from_microvolts(52_428_001)).is_none());
+}
+
+#[test]
+fn bus_limit_rounds_to_nearest() {
+    let enc = |uv| convert::encode_bus_limit(BusVoltage::from_microvolts(uv));
+    assert_eq!(enc(1_600), Some(1));
+    assert_eq!(enc(2_399), Some(1));
+    assert_eq!(enc(2_400), Some(2));
+}
+
+proptest! {
+    /// Range violation is the only failure mode, and there is no panic for any
+    /// `u32` a caller can construct — including values near `u32::MAX`, where
+    /// the intermediate arithmetic must not wrap.
+    #[test]
+    fn bus_limit_never_panics(uv in 0u32..=u32::MAX) {
+        let _ = convert::encode_bus_limit(BusVoltage::from_microvolts(uv));
+    }
+}
+
+#[test]
+fn power_limit_round_trips_every_representable_code() {
+    let cal = datasheet_example_calibration();
+    for raw in 0..=u16::MAX {
+        let decoded = convert::decode_power(raw, cal);
+        assert_eq!(convert::encode_power_limit(decoded, cal), Some(raw), "raw {raw}");
+    }
+}
+
+#[test]
+fn power_limit_rejects_values_beyond_full_scale() {
+    let cal = datasheet_example_calibration();
+    // Full scale is 65535 * 32 * CURRENT_LSB nW.
+    let full_scale = 65_535u64 * 32 * u64::from(cal.current_lsb().as_nanoamps());
+    assert!(convert::encode_power_limit(Power::from_nanowatts(full_scale), cal).is_some());
+    assert!(convert::encode_power_limit(Power::from_nanowatts(full_scale * 2), cal).is_none());
+}
+
+proptest! {
+    /// No panic for any `u64` a caller can construct. This is the case that
+    /// forced the remainder form of `div_round_nearest_u64`: the naive
+    /// `(n + d / 2) / d` overflows near `u64::MAX`.
+    #[test]
+    fn power_limit_never_panics(nw in 0u64..=u64::MAX) {
+        let _ = convert::encode_power_limit(Power::from_nanowatts(nw), datasheet_example_calibration());
+    }
 }
