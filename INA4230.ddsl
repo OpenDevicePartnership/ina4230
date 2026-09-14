@@ -16,6 +16,23 @@ device Device {
         ch-4: 3,
     },
 
+    /// Alert slot selector.
+    ///
+    /// The four ALERT_CONFIG/ALERT_LIMIT register pairs are *not* per-channel.
+    /// Datasheet Table 7-20 describes each LIMITn_ALERT flag as "independent of
+    /// channel", and Table 7-8 gives ALERT_CONFIG a CHANNEL field selecting
+    /// which channel the slot watches. Slot 2 may watch channel 4.
+    ///
+    /// The datasheet calls these ALERT1..ALERT4 (Table 7-7) and LIMIT1..LIMIT4
+    /// (Table 7-9). The variants are bare numbers because the enum name
+    /// already supplies the noun.
+    enum alert-slot {
+        one: 0,
+        two: 1,
+        three: 2,
+        four: 3,
+    },
+
     /// Per-channel register bank.
     ///
     /// Datasheet Table 7-1: the eight per-channel register definitions are
@@ -97,9 +114,19 @@ device Device {
                 field shunt-cal 14:0,
             },
         },
+    },
+
+    /// Alert slot register bank.
+    ///
+    /// Datasheet Table 7-1: ALERT_LIMIT at 0x06, 0x0E, 0x16, 0x1E and
+    /// ALERT_CONFIG at 0x07, 0x0F, 0x17, 0x1F. Same stride as `channel-regs`,
+    /// but the index is an alert slot, not a channel.
+    block alert-regs[alert-slot stride 8] {
+        address-offset: 0,
+
         /// Alert limit register.
         ///
-        /// Datasheet §7.1.5: the format follows the result register the
+        /// Datasheet 7.1.5: the format follows the result register the
         /// selected alert function refers to. Shunt voltage limits are signed
         /// 16-bit, bus voltage limits are unsigned 15-bit (bit 15 reserved),
         /// and power limits are unsigned 16-bit.

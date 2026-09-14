@@ -38,6 +38,19 @@ impl<I> Device<I> {
         let address = self.base_address + 0 + u8::from(index) as u8 * 8;
         ChannelRegs::<'_, I>::new(::device_driver::Block::interface(self), address)
     }
+    /// Alert slot register bank.
+    ///
+    /// Datasheet Table 7-1: ALERT_LIMIT at 0x06, 0x0E, 0x16, 0x1E and
+    /// ALERT_CONFIG at 0x07, 0x0F, 0x17, 0x1F. Same stride as `channel-regs`,
+    /// but the index is an alert slot, not a channel.
+    ///
+    /// Block operation:
+    /// - Address: `0`
+    #[doc(alias = "alert-regs")]
+    pub fn alert_regs(&mut self, index: AlertSlot) -> AlertRegs<'_, I> {
+        let address = self.base_address + 0 + u8::from(index) as u8 * 8;
+        AlertRegs::<'_, I>::new(::device_driver::Block::interface(self), address)
+    }
     /// Configuration register 1
     ///
     /// Register operation:
@@ -214,9 +227,43 @@ impl<'i, I> ChannelRegs<'i, I> {
         let address = self.base_address + 5;
         ::device_driver::RegisterOperation::new(self, address as u8, || Calibration::from([0, 0]))
     }
+}
+impl<'i, I> ::device_driver::Block for ChannelRegs<'i, I> {
+    type Interface = I;
+    type RegisterAddressType = u8;
+    type CommandAddressType = u8;
+    type BufferAddressType = u8;
+    type RegisterAddressMode = ();
+    fn interface(&mut self) -> &mut Self::Interface {
+        self.interface
+    }
+}
+/// Alert slot register bank.
+///
+/// Datasheet Table 7-1: ALERT_LIMIT at 0x06, 0x0E, 0x16, 0x1E and
+/// ALERT_CONFIG at 0x07, 0x0F, 0x17, 0x1F. Same stride as `channel-regs`,
+/// but the index is an alert slot, not a channel.
+#[doc(alias = "alert-regs")]
+#[derive(Debug)]
+pub struct AlertRegs<'i, I> {
+    #[doc(hidden)]
+    interface: &'i mut I,
+    #[doc(hidden)]
+    #[allow(unused)]
+    base_address: u8,
+}
+impl<'i, I> AlertRegs<'i, I> {
+    /// Create a new instance of the block based on device interface
+    #[doc(hidden)]
+    fn new(interface: &'i mut I, base_address: u8) -> Self {
+        Self {
+            interface,
+            base_address: base_address,
+        }
+    }
     /// Alert limit register.
     ///
-    /// Datasheet §7.1.5: the format follows the result register the
+    /// Datasheet 7.1.5: the format follows the result register the
     /// selected alert function refers to. Shunt voltage limits are signed
     /// 16-bit, bus voltage limits are unsigned 15-bit (bit 15 reserved),
     /// and power limits are unsigned 16-bit.
@@ -250,7 +297,7 @@ impl<'i, I> ChannelRegs<'i, I> {
         ::device_driver::RegisterOperation::new(self, address as u8, || AlertConfig::from([0, 0]))
     }
 }
-impl<'i, I> ::device_driver::Block for ChannelRegs<'i, I> {
+impl<'i, I> ::device_driver::Block for AlertRegs<'i, I> {
     type Interface = I;
     type RegisterAddressType = u8;
     type CommandAddressType = u8;
@@ -258,261 +305,6 @@ impl<'i, I> ::device_driver::Block for ChannelRegs<'i, I> {
     type RegisterAddressMode = ();
     fn interface(&mut self) -> &mut Self::Interface {
         self.interface
-    }
-}
-#[doc(alias = "alert-config")]
-#[derive(Copy, Clone, Eq, PartialEq)]
-#[repr(transparent)]
-pub struct AlertConfig {
-    #[doc(hidden)]
-    /// The internal bits
-    bits: [u8; 2],
-}
-unsafe impl ::device_driver::Fieldset for AlertConfig {
-    const METADATA: ::device_driver::FieldsetMetadata =
-        ::device_driver::FieldsetMetadata::new().with_byte_order(::device_driver::ByteOrder::BE);
-    const ZERO: Self = Self { bits: [0; 2] };
-}
-impl AlertConfig {
-    /// `4:3` - Read the `channel` field.
-    ///
-    /// Channel assignment for this alert.
-    #[must_use]
-    pub fn channel(&self) -> AlertChannel {
-        let start = 3;
-        let end = 4;
-        let raw = unsafe { ::device_driver::ops::load::<u8, ::device_driver::ops::BE>(&self.bits, start, end) };
-        unsafe { raw.try_into().unwrap_unchecked() }
-    }
-    /// `2:0` - Read the `alert_mask` field.
-    ///
-    /// Active alert function selection.
-    #[doc(alias = "alert-mask")]
-    #[must_use]
-    pub fn alert_mask(&self) -> AlertFunction {
-        let start = 0;
-        let end = 2;
-        let raw = unsafe { ::device_driver::ops::load::<u8, ::device_driver::ops::BE>(&self.bits, start, end) };
-        raw.into()
-    }
-    /// `4:3` - Set the `channel` field.
-    ///
-    /// Channel assignment for this alert.
-    pub fn set_channel(&mut self, value: AlertChannel) {
-        let start = 3;
-        let end = 4;
-        let raw = value.into();
-        unsafe { ::device_driver::ops::store::<u8, ::device_driver::ops::BE>(raw, start, end, &mut self.bits) };
-    }
-    /// `2:0` - Set the `alert_mask` field.
-    ///
-    /// Active alert function selection.
-    #[doc(alias = "alert-mask")]
-    pub fn set_alert_mask(&mut self, value: AlertFunction) {
-        let start = 0;
-        let end = 2;
-        let raw = value.into();
-        unsafe { ::device_driver::ops::store::<u8, ::device_driver::ops::BE>(raw, start, end, &mut self.bits) };
-    }
-}
-impl Default for AlertConfig {
-    fn default() -> Self {
-        <Self as ::device_driver::Fieldset>::ZERO
-    }
-}
-impl From<[u8; 2]> for AlertConfig {
-    fn from(bits: [u8; 2]) -> Self {
-        Self { bits }
-    }
-}
-impl From<AlertConfig> for [u8; 2] {
-    fn from(val: AlertConfig) -> Self {
-        val.bits
-    }
-}
-impl core::fmt::Debug for AlertConfig {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
-        let mut d = f.debug_struct("AlertConfig");
-        d.field("channel", &self.channel());
-        d.field("alert_mask", &self.alert_mask());
-        d.finish()
-    }
-}
-#[cfg(feature = "defmt")]
-impl defmt::Format for AlertConfig {
-    fn format(&self, f: defmt::Formatter) {
-        defmt::write!(f, "AlertConfig {{ ");
-        defmt::write!(f, "channel: {}, ", &self.channel());
-        defmt::write!(f, "alert_mask: {}, ", &self.alert_mask());
-        defmt::write!(f, "}}");
-    }
-}
-impl core::ops::BitAnd for AlertConfig {
-    type Output = Self;
-    fn bitand(mut self, rhs: Self) -> Self::Output {
-        self &= rhs;
-        self
-    }
-}
-impl core::ops::BitAndAssign for AlertConfig {
-    fn bitand_assign(&mut self, rhs: Self) {
-        for (l, r) in self.bits.iter_mut().zip(&rhs.bits) {
-            *l &= *r;
-        }
-    }
-}
-impl core::ops::BitOr for AlertConfig {
-    type Output = Self;
-    fn bitor(mut self, rhs: Self) -> Self::Output {
-        self |= rhs;
-        self
-    }
-}
-impl core::ops::BitOrAssign for AlertConfig {
-    fn bitor_assign(&mut self, rhs: Self) {
-        for (l, r) in self.bits.iter_mut().zip(&rhs.bits) {
-            *l |= *r;
-        }
-    }
-}
-impl core::ops::BitXor for AlertConfig {
-    type Output = Self;
-    fn bitxor(mut self, rhs: Self) -> Self::Output {
-        self ^= rhs;
-        self
-    }
-}
-impl core::ops::BitXorAssign for AlertConfig {
-    fn bitxor_assign(&mut self, rhs: Self) {
-        for (l, r) in self.bits.iter_mut().zip(&rhs.bits) {
-            *l ^= *r;
-        }
-    }
-}
-impl core::ops::Not for AlertConfig {
-    type Output = Self;
-    fn not(mut self) -> Self::Output {
-        for val in self.bits.iter_mut() {
-            *val = !*val;
-        }
-        self
-    }
-}
-#[doc(alias = "alert-limit")]
-#[derive(Copy, Clone, Eq, PartialEq)]
-#[repr(transparent)]
-pub struct AlertLimit {
-    #[doc(hidden)]
-    /// The internal bits
-    bits: [u8; 2],
-}
-unsafe impl ::device_driver::Fieldset for AlertLimit {
-    const METADATA: ::device_driver::FieldsetMetadata =
-        ::device_driver::FieldsetMetadata::new().with_byte_order(::device_driver::ByteOrder::BE);
-    const ZERO: Self = Self { bits: [0; 2] };
-}
-impl AlertLimit {
-    /// `15:0` - Read the `limit` field.
-    ///
-    /// Alert threshold, in the format of the corresponding result
-    /// register.
-    #[must_use]
-    pub fn limit(&self) -> u16 {
-        let start = 0;
-        let end = 15;
-        let raw = unsafe { ::device_driver::ops::load::<u16, ::device_driver::ops::BE>(&self.bits, start, end) };
-        raw
-    }
-    /// `15:0` - Set the `limit` field.
-    ///
-    /// Alert threshold, in the format of the corresponding result
-    /// register.
-    pub fn set_limit(&mut self, value: u16) {
-        let start = 0;
-        let end = 15;
-        let raw = value;
-        unsafe { ::device_driver::ops::store::<u16, ::device_driver::ops::BE>(raw, start, end, &mut self.bits) };
-    }
-}
-impl Default for AlertLimit {
-    fn default() -> Self {
-        <Self as ::device_driver::Fieldset>::ZERO
-    }
-}
-impl From<[u8; 2]> for AlertLimit {
-    fn from(bits: [u8; 2]) -> Self {
-        Self { bits }
-    }
-}
-impl From<AlertLimit> for [u8; 2] {
-    fn from(val: AlertLimit) -> Self {
-        val.bits
-    }
-}
-impl core::fmt::Debug for AlertLimit {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
-        let mut d = f.debug_struct("AlertLimit");
-        d.field("limit", &self.limit());
-        d.finish()
-    }
-}
-#[cfg(feature = "defmt")]
-impl defmt::Format for AlertLimit {
-    fn format(&self, f: defmt::Formatter) {
-        defmt::write!(f, "AlertLimit {{ ");
-        defmt::write!(f, "limit: {=u16}, ", &self.limit());
-        defmt::write!(f, "}}");
-    }
-}
-impl core::ops::BitAnd for AlertLimit {
-    type Output = Self;
-    fn bitand(mut self, rhs: Self) -> Self::Output {
-        self &= rhs;
-        self
-    }
-}
-impl core::ops::BitAndAssign for AlertLimit {
-    fn bitand_assign(&mut self, rhs: Self) {
-        for (l, r) in self.bits.iter_mut().zip(&rhs.bits) {
-            *l &= *r;
-        }
-    }
-}
-impl core::ops::BitOr for AlertLimit {
-    type Output = Self;
-    fn bitor(mut self, rhs: Self) -> Self::Output {
-        self |= rhs;
-        self
-    }
-}
-impl core::ops::BitOrAssign for AlertLimit {
-    fn bitor_assign(&mut self, rhs: Self) {
-        for (l, r) in self.bits.iter_mut().zip(&rhs.bits) {
-            *l |= *r;
-        }
-    }
-}
-impl core::ops::BitXor for AlertLimit {
-    type Output = Self;
-    fn bitxor(mut self, rhs: Self) -> Self::Output {
-        self ^= rhs;
-        self
-    }
-}
-impl core::ops::BitXorAssign for AlertLimit {
-    fn bitxor_assign(&mut self, rhs: Self) {
-        for (l, r) in self.bits.iter_mut().zip(&rhs.bits) {
-            *l ^= *r;
-        }
-    }
-}
-impl core::ops::Not for AlertLimit {
-    type Output = Self;
-    fn not(mut self) -> Self::Output {
-        for val in self.bits.iter_mut() {
-            *val = !*val;
-        }
-        self
     }
 }
 #[doc(alias = "calibration")]
@@ -1201,6 +993,261 @@ impl core::ops::BitXorAssign for ShuntVoltage {
     }
 }
 impl core::ops::Not for ShuntVoltage {
+    type Output = Self;
+    fn not(mut self) -> Self::Output {
+        for val in self.bits.iter_mut() {
+            *val = !*val;
+        }
+        self
+    }
+}
+#[doc(alias = "alert-config")]
+#[derive(Copy, Clone, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct AlertConfig {
+    #[doc(hidden)]
+    /// The internal bits
+    bits: [u8; 2],
+}
+unsafe impl ::device_driver::Fieldset for AlertConfig {
+    const METADATA: ::device_driver::FieldsetMetadata =
+        ::device_driver::FieldsetMetadata::new().with_byte_order(::device_driver::ByteOrder::BE);
+    const ZERO: Self = Self { bits: [0; 2] };
+}
+impl AlertConfig {
+    /// `4:3` - Read the `channel` field.
+    ///
+    /// Channel assignment for this alert.
+    #[must_use]
+    pub fn channel(&self) -> AlertChannel {
+        let start = 3;
+        let end = 4;
+        let raw = unsafe { ::device_driver::ops::load::<u8, ::device_driver::ops::BE>(&self.bits, start, end) };
+        unsafe { raw.try_into().unwrap_unchecked() }
+    }
+    /// `2:0` - Read the `alert_mask` field.
+    ///
+    /// Active alert function selection.
+    #[doc(alias = "alert-mask")]
+    #[must_use]
+    pub fn alert_mask(&self) -> AlertFunction {
+        let start = 0;
+        let end = 2;
+        let raw = unsafe { ::device_driver::ops::load::<u8, ::device_driver::ops::BE>(&self.bits, start, end) };
+        raw.into()
+    }
+    /// `4:3` - Set the `channel` field.
+    ///
+    /// Channel assignment for this alert.
+    pub fn set_channel(&mut self, value: AlertChannel) {
+        let start = 3;
+        let end = 4;
+        let raw = value.into();
+        unsafe { ::device_driver::ops::store::<u8, ::device_driver::ops::BE>(raw, start, end, &mut self.bits) };
+    }
+    /// `2:0` - Set the `alert_mask` field.
+    ///
+    /// Active alert function selection.
+    #[doc(alias = "alert-mask")]
+    pub fn set_alert_mask(&mut self, value: AlertFunction) {
+        let start = 0;
+        let end = 2;
+        let raw = value.into();
+        unsafe { ::device_driver::ops::store::<u8, ::device_driver::ops::BE>(raw, start, end, &mut self.bits) };
+    }
+}
+impl Default for AlertConfig {
+    fn default() -> Self {
+        <Self as ::device_driver::Fieldset>::ZERO
+    }
+}
+impl From<[u8; 2]> for AlertConfig {
+    fn from(bits: [u8; 2]) -> Self {
+        Self { bits }
+    }
+}
+impl From<AlertConfig> for [u8; 2] {
+    fn from(val: AlertConfig) -> Self {
+        val.bits
+    }
+}
+impl core::fmt::Debug for AlertConfig {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+        let mut d = f.debug_struct("AlertConfig");
+        d.field("channel", &self.channel());
+        d.field("alert_mask", &self.alert_mask());
+        d.finish()
+    }
+}
+#[cfg(feature = "defmt")]
+impl defmt::Format for AlertConfig {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "AlertConfig {{ ");
+        defmt::write!(f, "channel: {}, ", &self.channel());
+        defmt::write!(f, "alert_mask: {}, ", &self.alert_mask());
+        defmt::write!(f, "}}");
+    }
+}
+impl core::ops::BitAnd for AlertConfig {
+    type Output = Self;
+    fn bitand(mut self, rhs: Self) -> Self::Output {
+        self &= rhs;
+        self
+    }
+}
+impl core::ops::BitAndAssign for AlertConfig {
+    fn bitand_assign(&mut self, rhs: Self) {
+        for (l, r) in self.bits.iter_mut().zip(&rhs.bits) {
+            *l &= *r;
+        }
+    }
+}
+impl core::ops::BitOr for AlertConfig {
+    type Output = Self;
+    fn bitor(mut self, rhs: Self) -> Self::Output {
+        self |= rhs;
+        self
+    }
+}
+impl core::ops::BitOrAssign for AlertConfig {
+    fn bitor_assign(&mut self, rhs: Self) {
+        for (l, r) in self.bits.iter_mut().zip(&rhs.bits) {
+            *l |= *r;
+        }
+    }
+}
+impl core::ops::BitXor for AlertConfig {
+    type Output = Self;
+    fn bitxor(mut self, rhs: Self) -> Self::Output {
+        self ^= rhs;
+        self
+    }
+}
+impl core::ops::BitXorAssign for AlertConfig {
+    fn bitxor_assign(&mut self, rhs: Self) {
+        for (l, r) in self.bits.iter_mut().zip(&rhs.bits) {
+            *l ^= *r;
+        }
+    }
+}
+impl core::ops::Not for AlertConfig {
+    type Output = Self;
+    fn not(mut self) -> Self::Output {
+        for val in self.bits.iter_mut() {
+            *val = !*val;
+        }
+        self
+    }
+}
+#[doc(alias = "alert-limit")]
+#[derive(Copy, Clone, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct AlertLimit {
+    #[doc(hidden)]
+    /// The internal bits
+    bits: [u8; 2],
+}
+unsafe impl ::device_driver::Fieldset for AlertLimit {
+    const METADATA: ::device_driver::FieldsetMetadata =
+        ::device_driver::FieldsetMetadata::new().with_byte_order(::device_driver::ByteOrder::BE);
+    const ZERO: Self = Self { bits: [0; 2] };
+}
+impl AlertLimit {
+    /// `15:0` - Read the `limit` field.
+    ///
+    /// Alert threshold, in the format of the corresponding result
+    /// register.
+    #[must_use]
+    pub fn limit(&self) -> u16 {
+        let start = 0;
+        let end = 15;
+        let raw = unsafe { ::device_driver::ops::load::<u16, ::device_driver::ops::BE>(&self.bits, start, end) };
+        raw
+    }
+    /// `15:0` - Set the `limit` field.
+    ///
+    /// Alert threshold, in the format of the corresponding result
+    /// register.
+    pub fn set_limit(&mut self, value: u16) {
+        let start = 0;
+        let end = 15;
+        let raw = value;
+        unsafe { ::device_driver::ops::store::<u16, ::device_driver::ops::BE>(raw, start, end, &mut self.bits) };
+    }
+}
+impl Default for AlertLimit {
+    fn default() -> Self {
+        <Self as ::device_driver::Fieldset>::ZERO
+    }
+}
+impl From<[u8; 2]> for AlertLimit {
+    fn from(bits: [u8; 2]) -> Self {
+        Self { bits }
+    }
+}
+impl From<AlertLimit> for [u8; 2] {
+    fn from(val: AlertLimit) -> Self {
+        val.bits
+    }
+}
+impl core::fmt::Debug for AlertLimit {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+        let mut d = f.debug_struct("AlertLimit");
+        d.field("limit", &self.limit());
+        d.finish()
+    }
+}
+#[cfg(feature = "defmt")]
+impl defmt::Format for AlertLimit {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "AlertLimit {{ ");
+        defmt::write!(f, "limit: {=u16}, ", &self.limit());
+        defmt::write!(f, "}}");
+    }
+}
+impl core::ops::BitAnd for AlertLimit {
+    type Output = Self;
+    fn bitand(mut self, rhs: Self) -> Self::Output {
+        self &= rhs;
+        self
+    }
+}
+impl core::ops::BitAndAssign for AlertLimit {
+    fn bitand_assign(&mut self, rhs: Self) {
+        for (l, r) in self.bits.iter_mut().zip(&rhs.bits) {
+            *l &= *r;
+        }
+    }
+}
+impl core::ops::BitOr for AlertLimit {
+    type Output = Self;
+    fn bitor(mut self, rhs: Self) -> Self::Output {
+        self |= rhs;
+        self
+    }
+}
+impl core::ops::BitOrAssign for AlertLimit {
+    fn bitor_assign(&mut self, rhs: Self) {
+        for (l, r) in self.bits.iter_mut().zip(&rhs.bits) {
+            *l |= *r;
+        }
+    }
+}
+impl core::ops::BitXor for AlertLimit {
+    type Output = Self;
+    fn bitxor(mut self, rhs: Self) -> Self::Output {
+        self ^= rhs;
+        self
+    }
+}
+impl core::ops::BitXorAssign for AlertLimit {
+    fn bitxor_assign(&mut self, rhs: Self) {
+        for (l, r) in self.bits.iter_mut().zip(&rhs.bits) {
+            *l ^= *r;
+        }
+    }
+}
+impl core::ops::Not for AlertLimit {
     type Output = Self;
     fn not(mut self) -> Self::Output {
         for val in self.bits.iter_mut() {
@@ -2142,6 +2189,63 @@ impl From<Channel> for u8 {
 }
 #[doc(hidden)]
 impl ::device_driver::EnumIndex for Channel {
+    #[track_caller]
+    fn index(&self) -> i32 {
+        let index = u8::from(*self);
+        index.try_into().unwrap()
+    }
+}
+/// Alert slot selector.
+///
+/// The four ALERT_CONFIG/ALERT_LIMIT register pairs are *not* per-channel.
+/// Datasheet Table 7-20 describes each LIMITn_ALERT flag as "independent of
+/// channel", and Table 7-8 gives ALERT_CONFIG a CHANNEL field selecting
+/// which channel the slot watches. Slot 2 may watch channel 4.
+///
+/// The datasheet calls these ALERT1..ALERT4 (Table 7-7) and LIMIT1..LIMIT4
+/// (Table 7-9). The variants are bare numbers because the enum name
+/// already supplies the noun.
+#[doc(alias = "alert-slot")]
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum AlertSlot {
+    #[doc(alias = "one")]
+    One = 0,
+    #[doc(alias = "two")]
+    Two = 1,
+    #[doc(alias = "three")]
+    Three = 2,
+    #[doc(alias = "four")]
+    Four = 3,
+}
+impl core::convert::TryFrom<u8> for AlertSlot {
+    type Error = ::device_driver::ConversionError<u8>;
+    fn try_from(val: u8) -> Result<Self, Self::Error> {
+        match val {
+            0 => Ok(Self::One),
+            1 => Ok(Self::Two),
+            2 => Ok(Self::Three),
+            3 => Ok(Self::Four),
+            val => Err(::device_driver::ConversionError {
+                source: val,
+                target: "AlertSlot",
+            }),
+        }
+    }
+}
+impl From<AlertSlot> for u8 {
+    fn from(val: AlertSlot) -> Self {
+        match val {
+            AlertSlot::One => 0,
+            AlertSlot::Two => 1,
+            AlertSlot::Three => 2,
+            AlertSlot::Four => 3,
+        }
+    }
+}
+#[doc(hidden)]
+impl ::device_driver::EnumIndex for AlertSlot {
     #[track_caller]
     fn index(&self) -> i32 {
         let index = u8::from(*self);
