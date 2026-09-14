@@ -9,14 +9,13 @@ use embedded_sensors_hal_async::sensor;
 #[allow(clippy::pedantic)]
 #[allow(unsafe_code)]
 #[allow(missing_docs)]
-// The ALERT_LIMIT and ALERT_CONFIG accessors are generated but not yet wired
-// into the public API. See "Not yet implemented" in the README.
-#[allow(dead_code)]
 mod device;
 
+pub mod alert;
 pub mod convert;
 pub mod units;
 
+pub use crate::alert::{Alert, AlertSlot};
 pub use crate::units::{
     AdcRange, AddrPinState, Address, AddressPins, BusVoltage, Calibration, CalibrationError, Channel, Current,
     CurrentLsb, Energy, Power, ShuntCal, ShuntResistance, ShuntVoltage,
@@ -34,6 +33,7 @@ const LARGEST_REG_SIZE_BYTES: usize = 4;
 /// variant would discard the others, and reading the register clears them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub enum Ina4230Error<I2cError> {
     /// An error occurred on the I²C bus.
     Bus(I2cError),
@@ -45,6 +45,16 @@ pub enum Ina4230Error<I2cError> {
     ///
     /// Detected before any bus traffic is generated.
     NotCalibrated(Channel),
+    /// An alert threshold does not fit `ALERT_LIMIT` at the target channel's
+    /// scale.
+    ///
+    /// The representable range depends on the alert kind: ±81.92 mV or
+    /// ±20.48 mV for shunt thresholds depending on [`AdcRange`], 0 to
+    /// 52.4272 V for bus thresholds, and `65535 × 32 × CURRENT_LSB` for power
+    /// thresholds.
+    ///
+    /// Detected before any bus traffic is generated.
+    LimitOutOfRange(AlertSlot),
 }
 
 impl<E: embedded_hal_async::i2c::Error> sensor::Error for Ina4230Error<E> {
@@ -52,6 +62,7 @@ impl<E: embedded_hal_async::i2c::Error> sensor::Error for Ina4230Error<E> {
         match self {
             Self::Bus(_) => sensor::ErrorKind::Peripheral,
             Self::NotCalibrated(_) => sensor::ErrorKind::NotReady,
+            Self::LimitOutOfRange(_) => sensor::ErrorKind::InvalidInput,
         }
     }
 }
@@ -157,6 +168,19 @@ impl Flags {
         self.energy_overflow.iter().any(|&v| v)
     }
 
+    /// Whether `slot`'s alert limit has been exceeded.
+    ///
+    /// The channel this refers to is whichever one the slot's `ALERT_CONFIG`
+    /// selects (datasheet Table 7-8), not one derived from the slot number —
+    /// Table 7-20 describes these flags as independent of channel.
+    ///
+    /// See [`Flags::limit_alerts`] for why a limit flag need not agree with the
+    /// averaged measurement registers.
+    #[must_use]
+    pub const fn limit_alert(self, slot: AlertSlot) -> bool {
+        self.limit_alerts[slot.index()]
+    }
+
     /// The four alert limit flags, ordered `[LIMIT1, LIMIT2, LIMIT3, LIMIT4]`.
     ///
     /// Each flag belongs to an `ALERT_CONFIG` register rather than to a fixed
@@ -259,6 +283,16 @@ pub struct Ina4230<I2c: embedded_hal_async::i2c::I2c> {
     /// reflection of the device. It cannot observe a power cycle, an EN-pin
     /// toggle, a General Call reset, or writes by another bus controller.
     calibration: [Option<Calibration>; 4],
+    /// Per-slot alert configuration, as programmed through this driver.
+    ///
+    /// Carries the same caveat as [`Ina4230::calibration`]: a record of this
+    /// driver's own successful writes, not a reflection of the device.
+    ///
+    /// Cached because invalidation needs it. When a channel is recalibrated,
+    /// [`Ina4230::calibrate`] has to know which slots target that channel and
+    /// which of those are shunt or power alerts. Without this, that question
+    /// would cost four register reads on every calibration.
+    alerts: [Option<(Channel, Alert)>; 4],
 }
 
 impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
@@ -275,6 +309,7 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
             }),
             address,
             calibration: [None; 4],
+            alerts: [None; 4],
         }
     }
 
@@ -299,31 +334,49 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// make the driver confidently scale readings with settings the device no
     /// longer has.
     ///
+    /// It also includes every `ALERT_CONFIG`, which returns to a reserved
+    /// no-effect `ALERT_MASK`, so the cached per-slot alert configuration is
+    /// discarded once the write lands. On success [`Ina4230::alert`] reports
+    /// every slot as disarmed, which is what the device now is; on failure the
+    /// cache is left alone, for the reasons below.
+    ///
     /// Call [`Ina4230::calibrate`] again before reading shunt voltage, current,
     /// power, or energy.
     ///
-    /// # The cache is cleared before the write, not after
+    /// # The calibration cache is cleared before the write, the alert cache after
     ///
     /// I²C gives no way to learn whether a device acted on a transaction that
     /// failed partway, and a future dropped at an `await` point may still have
-    /// put the write on the wire. Both cases would leave a reset device paired
-    /// with a stale cache, and because a reset zeroes `SHUNT_CAL` the part then
-    /// reports a current of exactly zero (datasheet §8.1.2) — a plausible
-    /// reading rather than an obvious fault.
+    /// put the write on the wire. So after a failure the device may or may not
+    /// have reset, and the two caches want opposite answers to that.
     ///
-    /// Clearing first makes the cache never outlive the device's calibration.
-    /// The cost of clearing unnecessarily is one redundant calibration; the
-    /// cost of not clearing is silently wrong measurements.
+    /// A stale *calibration* is the dangerous direction: a reset zeroes
+    /// `SHUNT_CAL`, so the part reports a current of exactly zero (datasheet
+    /// §8.1.2) — a plausible reading rather than an obvious fault. Clearing
+    /// first makes the cache never outlive the device's calibration. The cost
+    /// of clearing unnecessarily is one redundant calibration; the cost of not
+    /// clearing is silently wrong measurements.
+    ///
+    /// A cleared *alert* cache is the dangerous direction. If the reset did not
+    /// land, slots are still armed on the device while the driver believes they
+    /// are not, so the next [`Ina4230::calibrate`] finds nothing to disarm and
+    /// moves `CONFIG2.RANGE` under a live shunt or power threshold — the
+    /// factor-of-four error the disarming exists to prevent, with no record
+    /// left anywhere. The cache is therefore cleared only once the write
+    /// succeeds. Over-reporting costs at most a few redundant `ALERT_MASK` = 0
+    /// writes to already-cleared registers.
     ///
     /// # Errors
     ///
-    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. The cache is
-    /// cleared either way, so a failed reset always leaves the driver in the
-    /// loud [`Ina4230Error::NotCalibrated`] state rather than a quiet wrong
-    /// one.
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. A failed reset
+    /// always leaves the driver in the loud [`Ina4230Error::NotCalibrated`]
+    /// state rather than a quiet wrong one, and leaves every slot it had armed
+    /// still marked as armed.
     pub async fn reset(&mut self) -> Result<(), Ina4230Error<I2c::Error>> {
         self.calibration = [None; 4];
-        self.device.config_2().write_async(|w| w.set_rst(true)).await
+        self.device.config_2().write_async(|w| w.set_rst(true)).await?;
+        self.alerts = [None; 4];
+        Ok(())
     }
 
     /// Read the manufacturer ID register.
@@ -370,8 +423,24 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     ///
     /// To poll for conversion completion:
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// # use embedded_hal_mock::eh1::i2c::Mock;
+    /// # use ina4230::{AddrPinState, AddressPins, Ina4230};
+    /// # #[derive(Debug)]
+    /// # struct DocError;
+    /// # impl<E: core::fmt::Debug> From<ina4230::Ina4230Error<E>> for DocError {
+    /// #     fn from(_: ina4230::Ina4230Error<E>) -> Self { DocError }
+    /// # }
+    /// # async fn example() -> Result<(), DocError> {
+    /// # let i2c = Mock::new(&[]);
+    /// # let mut sensor = Ina4230::new(i2c, AddressPins {
+    /// #     a0: AddrPinState::Gnd,
+    /// #     a1: AddrPinState::Gnd,
+    /// # });
     /// while !sensor.read_flags().await?.conversion_ready() {}
+    /// # Ok(())
+    /// # }
+    /// # fn main() { tokio::runtime::Runtime::new().unwrap().block_on(example()).unwrap(); }
     /// ```
     ///
     /// Inspect every returned [`Flags`] if alert information matters: a
@@ -433,11 +502,31 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// [`Ina4230Error::NotCalibrated`] rather than as readings scaled with a
     /// range the device no longer uses — which for the two ADC ranges would be
     /// a silent factor-of-four error.
+    ///
+    /// # Alert slots scaled by this channel are disarmed
+    ///
+    /// `ALERT_LIMIT` holds raw counts whose meaning comes from the target
+    /// channel's calibration, and nothing in the device couples the two. Every
+    /// slot holding a shunt or power threshold for `channel` is therefore
+    /// disarmed — `ALERT_MASK` written to 0 — before `CONFIG2.RANGE` moves, so
+    /// that no threshold is ever enforced against a scale it was not programmed
+    /// for. Re-arm them with [`Ina4230::set_alert`] after recalibrating.
+    ///
+    /// Bus thresholds have a fixed 1.6 mV LSB, do not depend on any
+    /// calibration, and are left armed.
+    ///
+    /// A bus error during the disarming returns with `CONFIG2.RANGE` untouched,
+    /// so any slot still armed is still armed against the scale it was given.
     pub async fn calibrate(
         &mut self,
         channel: Channel,
         calibration: Calibration,
     ) -> Result<(), Ina4230Error<I2c::Error>> {
+        // Disarm anything whose scale is about to move, before it moves. A
+        // failure here returns with CONFIG2.RANGE untouched, so whatever is
+        // still armed is still armed against the scale it was given.
+        self.disarm_scaled_alerts(channel).await?;
+
         // Invalidate first: from here until both writes land, the device's
         // calibration state is not something this driver can vouch for.
         self.calibration[channel.index()] = None;
@@ -478,7 +567,22 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// channels it did not reach reporting
     /// [`Ina4230Error::NotCalibrated`]; inspect [`Ina4230::calibration`] to see
     /// how far it got.
+    ///
+    /// # Alert slots scaled by any channel are disarmed
+    ///
+    /// The single `CONFIG2` write moves all four range bits, so every shunt and
+    /// power threshold in every slot is about to mean something else. All of
+    /// them are disarmed first, for the reasons given on [`Ina4230::calibrate`].
+    /// Bus thresholds are absolutely scaled and are left armed. If disarming
+    /// fails partway through, inspect [`Ina4230::alert`] to see which slots
+    /// remain armed.
     pub async fn calibrate_all(&mut self, calibrations: [Calibration; 4]) -> Result<(), Ina4230Error<I2c::Error>> {
+        // One CONFIG2 write moves all four range bits, so every channel's
+        // scaled alerts are about to become wrong.
+        for channel in Channel::ALL {
+            self.disarm_scaled_alerts(channel).await?;
+        }
+
         // The CONFIG2 write moves all four range bits at once, so every
         // channel's cached calibration is suspect from here until its own
         // SHUNT_CAL is back in place.
@@ -521,6 +625,148 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// Fetch the calibration for a channel, or fail before touching the bus.
     fn require_calibration(&self, channel: Channel) -> Result<Calibration, Ina4230Error<I2c::Error>> {
         self.calibration[channel.index()].ok_or(Ina4230Error::NotCalibrated(channel))
+    }
+
+    // ── Alerts ────────────────────────────────────────────────────────────────
+
+    /// The alert configured for `slot`, as programmed through this driver.
+    ///
+    /// [`None`] means the slot is disarmed — `ALERT_MASK` is one of the
+    /// reserved no-effect encodings.
+    ///
+    /// Reads the driver's cache, so it costs no bus traffic and cannot see a
+    /// power cycle, an EN-pin toggle, a General Call reset, or another
+    /// controller on the bus.
+    #[must_use]
+    pub const fn alert(&self, slot: AlertSlot) -> Option<(Channel, Alert)> {
+        self.alerts[slot.index()]
+    }
+
+    /// Arm `slot` to watch `channel` for `alert`.
+    ///
+    /// Writes `ALERT_LIMIT` and then `ALERT_CONFIG`, so the threshold is in
+    /// place before the condition is enabled.
+    ///
+    /// # Reprogramming an armed slot disarms it first
+    ///
+    /// `ALERT_LIMIT` and `ALERT_CONFIG` are separate registers, so a slot that
+    /// is already armed would spend the gap between the two writes holding the
+    /// *new* threshold against the *old* mask and channel. For a slot armed as
+    /// a 1 mV shunt-over alert (limit 400, mask 1) and reprogrammed to a 12 V
+    /// bus-over alert, a failure in between would leave the device enforcing
+    /// 7500 counts as a shunt threshold — 18.75 mV, eighteen times weaker than
+    /// asked for — while the cache still claimed 1 mV.
+    ///
+    /// So when the cache shows `slot` armed, `ALERT_MASK` is cleared and the
+    /// cache entry dropped before the new pair goes in. Any failure then leaves
+    /// the slot disarmed, or loaded with a new threshold and a clear mask,
+    /// which raises nothing. A slot the cache shows as disarmed still costs
+    /// exactly the two writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::NotCalibrated`] if `alert` is a shunt or power
+    /// condition and `channel` has no calibration — those thresholds scale with
+    /// [`AdcRange`] and `CURRENT_LSB`. Bus conditions need no calibration.
+    ///
+    /// Returns [`Ina4230Error::LimitOutOfRange`] if the threshold does not fit
+    /// `ALERT_LIMIT` at that scale.
+    ///
+    /// Both are detected before any bus traffic is generated.
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. This operation
+    /// is not transactional: if the `ALERT_LIMIT` write lands and the
+    /// `ALERT_CONFIG` write does not, the slot is left disarmed with a new
+    /// threshold loaded, and the cache is not updated.
+    pub async fn set_alert(
+        &mut self,
+        slot: AlertSlot,
+        channel: Channel,
+        alert: Alert,
+    ) -> Result<(), Ina4230Error<I2c::Error>> {
+        let raw = self.encode_alert(slot, channel, alert)?;
+
+        // Never let the new limit sit against the old mask and channel.
+        if self.alerts[slot.index()].is_some() {
+            self.clear_alert(slot).await?;
+        }
+
+        self.device
+            .alert_regs(slot.into())
+            .alert_limit()
+            .write_async(|w| w.set_limit(raw))
+            .await?;
+
+        self.device
+            .alert_regs(slot.into())
+            .alert_config()
+            .write_async(|w| {
+                w.set_channel(channel.into());
+                w.set_alert_mask(alert.alert_function());
+            })
+            .await?;
+
+        self.alerts[slot.index()] = Some((channel, alert));
+        Ok(())
+    }
+
+    /// Disarm `slot`.
+    ///
+    /// Writes `ALERT_MASK` = 0, one of the reserved no-effect encodings
+    /// (datasheet Table 7-8). `ALERT_LIMIT` is left alone; it has no effect
+    /// while the mask is clear.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. The cache
+    /// entry is dropped only once the write lands.
+    pub async fn clear_alert(&mut self, slot: AlertSlot) -> Result<(), Ina4230Error<I2c::Error>> {
+        self.device
+            .alert_regs(slot.into())
+            .alert_config()
+            .write_async(|w| w.set_alert_mask(device::AlertFunction::NoEffect))
+            .await?;
+
+        self.alerts[slot.index()] = None;
+        Ok(())
+    }
+
+    /// Disarm every slot whose threshold is scaled by `channel`'s calibration.
+    ///
+    /// Shunt and power thresholds are stored as raw counts scaled by
+    /// [`AdcRange`] and `CURRENT_LSB`. Recalibrating moves that scale, so a
+    /// slot left armed would enforce a different threshold than the one it was
+    /// given — for the two ADC ranges, a factor of four. Bus thresholds are
+    /// absolute and are left alone.
+    ///
+    /// Called before `CONFIG2.RANGE` moves, so that a failure here leaves every
+    /// still-armed slot armed against the scale it was programmed for.
+    async fn disarm_scaled_alerts(&mut self, channel: Channel) -> Result<(), Ina4230Error<I2c::Error>> {
+        for slot in AlertSlot::ALL {
+            match self.alerts[slot.index()] {
+                Some((ch, alert)) if ch == channel && alert.needs_calibration() => {
+                    self.clear_alert(slot).await?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Encode an alert threshold, failing before any bus traffic.
+    fn encode_alert(&self, slot: AlertSlot, channel: Channel, alert: Alert) -> Result<u16, Ina4230Error<I2c::Error>> {
+        let encoded = match alert {
+            Alert::ShuntOver(v) | Alert::ShuntUnder(v) => {
+                let cal = self.require_calibration(channel)?;
+                convert::encode_shunt_limit(v, cal.adc_range()).map(i16::cast_unsigned)
+            }
+            Alert::BusOver(v) | Alert::BusUnder(v) => convert::encode_bus_limit(v),
+            Alert::PowerOver(p) => {
+                let cal = self.require_calibration(channel)?;
+                convert::encode_power_limit(p, cal)
+            }
+        };
+        encoded.ok_or(Ina4230Error::LimitOutOfRange(slot))
     }
 }
 

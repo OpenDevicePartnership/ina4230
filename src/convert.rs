@@ -1,15 +1,14 @@
 //! Conversions between raw register values and physical quantities.
 //!
-//! Every function in this module is pure and *total*: given a value of the
-//! input type it always produces an output, with no failure case and no panic.
-//! Caller-supplied calibration inputs are validated separately, by
-//! [`Calibration::new`], which is the single fallible step in configuring the
-//! driver.
-//!
-//! Because nothing here touches a bus, these functions are testable by walking
-//! their entire input domain on the host. [`decode_bus_voltage`] has 65,536
-//! inputs; [`decode_shunt_voltage`] has 131,072. Both are exhausted in the
-//! test suite in well under a millisecond.
+//! Every decode function in this module is pure and *total*: given a value of
+//! the input type it always produces an output, with no failure case and no
+//! panic. The encode functions are pure but *not* total — a caller-supplied
+//! threshold may not be representable in a 16-bit register at the channel's
+//! configured scale, so they return [`Option`]. Because every function is pure
+//! and nothing here touches a bus, the test suite walks their input domains on
+//! the host. [`decode_bus_voltage`] has 65,536 inputs and
+//! [`decode_shunt_voltage`] has 131,072; both are exhausted in well under a
+//! millisecond.
 
 use crate::units::{AdcRange, BusVoltage, Calibration, Channel, Current, Energy, Power, ShuntVoltage};
 
@@ -95,4 +94,90 @@ pub const fn set_channel_bit(mask: u8, channel: Channel, set: bool) -> u8 {
 #[must_use]
 pub const fn channel_bit(mask: u8, channel: Channel) -> bool {
     mask & channel.mask() != 0
+}
+
+/// Divide, rounding to nearest, with halves rounding away from zero.
+///
+/// Matches the rounding `Calibration::new` already uses for `SHUNT_CAL`.
+///
+/// `d` is always a non-zero LSB constant, so this cannot trap. Callers pass
+/// `n` widened from `i32`, so `n + d / 2` cannot overflow `i64`.
+const fn div_round_nearest_i64(n: i64, d: i64) -> i64 {
+    if (n < 0) == (d < 0) {
+        (n + d / 2) / d
+    } else {
+        (n - d / 2) / d
+    }
+}
+
+/// Unsigned counterpart of [`div_round_nearest_i64`].
+///
+/// Written with an explicit remainder rather than `(n + d / 2) / d`, because
+/// `encode_power_limit` passes a full-range `u64` and that form overflows near
+/// `u64::MAX`. `r < d` and `d` is at most `32 * u32::MAX`, so `r * 2` stays
+/// well inside `u64`.
+const fn div_round_nearest_u64(n: u64, d: u64) -> u64 {
+    let q = n / d;
+    let r = n % d;
+    if r * 2 >= d { q + 1 } else { q }
+}
+
+/// Encode a shunt-voltage threshold for `ALERT_LIMIT`.
+///
+/// Inverse of [`decode_shunt_voltage`]. Rounds to nearest, matching
+/// `Calibration::new`.
+///
+/// Returns [`None`] if the threshold does not fit the signed 16-bit register
+/// at `range`: -81.92 mV to 81.9175 mV on [`AdcRange::Range0`], -20.48 mV to
+/// 20.479375 mV on [`AdcRange::Range1`].
+#[must_use]
+pub const fn encode_shunt_limit(v: ShuntVoltage, range: AdcRange) -> Option<i16> {
+    let raw = div_round_nearest_i64(v.as_nanovolts() as i64, range.shunt_lsb_nv() as i64);
+    if raw < i16::MIN as i64 || raw > i16::MAX as i64 {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    Some(raw as i16)
+}
+
+/// Highest `ALERT_LIMIT` code for a bus-voltage threshold.
+///
+/// Datasheet §7.1.5 specifies bus limits as unsigned *15*-bit. That is not an
+/// inconsistency against the 16-bit result register: `32767 × 1.6 mV =
+/// 52.4272 V`, exactly the bus measurement range in §8.1.1, so reserved bit 15
+/// covers codes the ADC never produces.
+const BUS_LIMIT_MAX: u64 = 0x7FFF;
+
+/// Encode a bus-voltage threshold for `ALERT_LIMIT`.
+///
+/// Inverse of [`decode_bus_voltage`]. Rounds to nearest.
+///
+/// Returns [`None`] above 52.4272 V. Needs no calibration: the bus LSB is a
+/// fixed 1.6 mV.
+#[must_use]
+pub const fn encode_bus_limit(v: BusVoltage) -> Option<u16> {
+    let raw = div_round_nearest_u64(v.as_microvolts() as u64, BUS_LSB_UV as u64);
+    if raw > BUS_LIMIT_MAX {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    Some(raw as u16)
+}
+
+/// Encode a power threshold for `ALERT_LIMIT`.
+///
+/// Inverse of [`decode_power`]. Rounds to nearest.
+///
+/// Returns [`None`] above `65535 × 32 × CURRENT_LSB`. The scale comes from the
+/// target channel's calibration, so the same threshold may be representable on
+/// one channel and not another.
+#[must_use]
+pub const fn encode_power_limit(p: Power, cal: Calibration) -> Option<u16> {
+    let lsb = POWER_LSB_MULTIPLIER * cal.current_lsb().as_nanoamps() as u64;
+    let raw = div_round_nearest_u64(p.as_nanowatts(), lsb);
+    if raw > u16::MAX as u64 {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    Some(raw as u16)
 }

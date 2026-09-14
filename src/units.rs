@@ -420,7 +420,14 @@ impl Calibration {
 pub struct ShuntVoltage(i32);
 
 impl ShuntVoltage {
-    pub(crate) const fn from_nanovolts(nv: i32) -> Self {
+    /// Construct from a raw value in nanovolts.
+    ///
+    /// Values outside the device's measurable range are accepted here and
+    /// rejected later, when a threshold is encoded against a specific
+    /// calibration — the representable range depends on `AdcRange` or
+    /// `CURRENT_LSB`, neither of which is known at this point.
+    #[must_use]
+    pub const fn from_nanovolts(nv: i32) -> Self {
         Self(nv)
     }
 
@@ -447,7 +454,14 @@ impl ShuntVoltage {
 pub struct BusVoltage(u32);
 
 impl BusVoltage {
-    pub(crate) const fn from_microvolts(uv: u32) -> Self {
+    /// Construct from a raw value in microvolts.
+    ///
+    /// Values outside the device's measurable range are accepted here and
+    /// rejected later, when a threshold is encoded against a specific
+    /// calibration — the representable range depends on `AdcRange` or
+    /// `CURRENT_LSB`, neither of which is known at this point.
+    #[must_use]
+    pub const fn from_microvolts(uv: u32) -> Self {
         Self(uv)
     }
 
@@ -478,7 +492,14 @@ impl BusVoltage {
 pub struct Current(i64);
 
 impl Current {
-    pub(crate) const fn from_nanoamps(na: i64) -> Self {
+    /// Construct from a raw value in nanoamperes.
+    ///
+    /// Values outside the device's measurable range are accepted here and
+    /// rejected later, when a threshold is encoded against a specific
+    /// calibration — the representable range depends on `AdcRange` or
+    /// `CURRENT_LSB`, neither of which is known at this point.
+    #[must_use]
+    pub const fn from_nanoamps(na: i64) -> Self {
         Self(na)
     }
 
@@ -515,7 +536,14 @@ impl Current {
 pub struct Power(u64);
 
 impl Power {
-    pub(crate) const fn from_nanowatts(nw: u64) -> Self {
+    /// Construct from a raw value in nanowatts.
+    ///
+    /// Values outside the device's measurable range are accepted here and
+    /// rejected later, when a threshold is encoded against a specific
+    /// calibration — the representable range depends on `AdcRange` or
+    /// `CURRENT_LSB`, neither of which is known at this point.
+    #[must_use]
+    pub const fn from_nanowatts(nw: u64) -> Self {
         Self(nw)
     }
 
@@ -552,7 +580,14 @@ impl Power {
 pub struct Energy(u64);
 
 impl Energy {
-    pub(crate) const fn from_nanojoules(nj: u64) -> Self {
+    /// Construct from a raw value in nanojoules.
+    ///
+    /// Values outside the device's measurable range are accepted here and
+    /// rejected later, when a threshold is encoded against a specific
+    /// calibration — the representable range depends on `AdcRange` or
+    /// `CURRENT_LSB`, neither of which is known at this point.
+    #[must_use]
+    pub const fn from_nanojoules(nj: u64) -> Self {
         Self(nj)
     }
 

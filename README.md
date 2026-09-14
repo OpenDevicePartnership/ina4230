@@ -61,7 +61,19 @@ ina4230 = "0.1.0"
 embedded-hal-async = "1"
 ```
 
-```rust,ignore
+```rust,no_run
+# use embedded_hal_mock::eh1::i2c::Mock;
+# #[derive(Debug)]
+# struct DocError;
+# impl<E: core::fmt::Debug> From<ina4230::Ina4230Error<E>> for DocError {
+#     fn from(_: ina4230::Ina4230Error<E>) -> Self { DocError }
+# }
+# impl From<ina4230::CalibrationError> for DocError {
+#     fn from(_: ina4230::CalibrationError) -> Self { DocError }
+# }
+# macro_rules! info { ($($t:tt)*) => { { let _ = ($($t)*); } } }
+# async fn example() -> Result<(), DocError> {
+# let i2c = Mock::new(&[]);
 use ina4230::{
     AdcRange, AddrPinState, AddressPins, Calibration, Channel, CurrentLsb,
     CurrentSensor, Ina4230, ShuntResistance, VoltageSensor,
@@ -89,7 +101,10 @@ while !sensor.read_flags().await?.conversion_ready() {}
 let bus = sensor.bus_voltage(Channel::Ch1).await?;
 let current = sensor.current(Channel::Ch1).await?;
 
-defmt::info!("{} mV, {} mA", bus.to_millivolts(), current.to_milliamps());
+info!("{} mV, {} mA", bus.to_millivolts(), current.to_milliamps());
+# Ok(())
+# }
+# fn main() { tokio::runtime::Runtime::new().unwrap().block_on(example()).unwrap(); }
 ```
 
 ## Configuration
@@ -195,8 +210,21 @@ got.
 All four channels are active after power-up. Unused channels can be disabled to
 shorten the conversion cycle:
 
-```rust,ignore
+```rust,no_run
+# use embedded_hal_mock::eh1::i2c::Mock;
+# use ina4230::{AddrPinState, AddressPins, Channel, Ina4230};
+# #[derive(Debug)]
+# struct DocError;
+# impl<E: core::fmt::Debug> From<ina4230::Ina4230Error<E>> for DocError {
+#     fn from(_: ina4230::Ina4230Error<E>) -> Self { DocError }
+# }
+# async fn example() -> Result<(), DocError> {
+# let i2c = Mock::new(&[]);
+# let mut sensor = Ina4230::new(i2c, AddressPins { a0: AddrPinState::Gnd, a1: AddrPinState::Gnd });
 sensor.set_channel_active(Channel::Ch3, false).await?;
+# Ok(())
+# }
+# fn main() { tokio::runtime::Runtime::new().unwrap().block_on(example()).unwrap(); }
 ```
 
 ## Examples
@@ -229,7 +257,18 @@ These need hardware, so they are not run in CI — only compiled.
 
 `read_flags()` returns the whole `FLAGS` register:
 
-```rust,ignore
+```rust,no_run
+# use embedded_hal_mock::eh1::i2c::Mock;
+# use ina4230::{AddrPinState, AddressPins, Ina4230};
+# #[derive(Debug)]
+# struct DocError;
+# impl<E: core::fmt::Debug> From<ina4230::Ina4230Error<E>> for DocError {
+#     fn from(_: ina4230::Ina4230Error<E>) -> Self { DocError }
+# }
+# macro_rules! warn { ($($t:tt)*) => { { let _ = ($($t)*); } } }
+# async fn example() -> Result<(), DocError> {
+# let i2c = Mock::new(&[]);
+# let mut sensor = Ina4230::new(i2c, AddressPins { a0: AddrPinState::Gnd, a1: AddrPinState::Gnd });
 let flags = sensor.read_flags().await?;
 if flags.math_overflow() {
     warn!("current and power data may be invalid");
@@ -237,6 +276,9 @@ if flags.math_overflow() {
 if flags.any_energy_overflow() {
     warn!("energy accumulator overflowed");
 }
+# Ok(())
+# }
+# fn main() { tokio::runtime::Runtime::new().unwrap().block_on(example()).unwrap(); }
 ```
 
 **This read has side effects.** Reading `FLAGS` clears the conversion-ready
@@ -269,18 +311,95 @@ behaviour. It cannot arise through this crate today, because `AVG` is not
 configurable here and the power-on default is a single sample, but it can if
 another controller on the bus has programmed `CONFIG1`.
 
+## Alerts
+
+The device has four alert slots. Each pairs a condition and a target channel
+with a threshold, and asserts the ALERT pin when the condition is met.
+
+A slot is not a channel: any slot can watch any channel, which is why
+`AlertSlot` and `Channel` are separate types. The datasheet calls the slots
+`ALERT1`..`ALERT4` (Table 7-7).
+
+```rust,no_run
+# use embedded_hal_mock::eh1::i2c::Mock;
+# use ina4230::{AddrPinState, AddressPins, Ina4230};
+# #[derive(Debug)]
+# struct DocError;
+# impl<E: core::fmt::Debug> From<ina4230::Ina4230Error<E>> for DocError {
+#     fn from(_: ina4230::Ina4230Error<E>) -> Self { DocError }
+# }
+# async fn example() -> Result<(), DocError> {
+# let i2c = Mock::new(&[]);
+# let mut sensor = Ina4230::new(i2c, AddressPins { a0: AddrPinState::Gnd, a1: AddrPinState::Gnd });
+use ina4230::{Alert, AlertSlot, BusVoltage, Channel, ShuntVoltage};
+
+// Undervoltage on channel 2, watched by slot 1.
+sensor.set_alert(
+    AlertSlot::One,
+    Channel::Ch2,
+    Alert::BusUnder(BusVoltage::from_microvolts(11_000_000)),
+).await?;
+
+// Overcurrent on channel 1, expressed as a shunt voltage, watched by slot 2.
+sensor.set_alert(
+    AlertSlot::Two,
+    Channel::Ch1,
+    Alert::ShuntOver(ShuntVoltage::from_nanovolts(40_000_000)),
+).await?;
+
+sensor.clear_alert(AlertSlot::One).await?;
+# Ok(())
+# }
+# fn main() { tokio::runtime::Runtime::new().unwrap().block_on(example()).unwrap(); }
+```
+
+Each `Alert` variant carries its threshold in the unit that variant implies, so
+a bus threshold cannot be paired with a shunt condition — there is no way to
+write it.
+
+**Shunt and power thresholds need the target channel to be calibrated.** Their
+scale comes from the channel's `AdcRange` and `CURRENT_LSB`; `set_alert`
+returns `NotCalibrated` otherwise, before touching the bus. Bus thresholds have
+a fixed 1.6 mV LSB and work on an uncalibrated channel.
+
+**Recalibrating a channel disarms its shunt and power alerts.** `ALERT_LIMIT`
+holds raw counts: shunt limits depend on `AdcRange`, whose two scales differ by
+a factor of four, and power limits depend on `CURRENT_LSB`. A slot left armed
+across a recalibration could therefore silently enforce a different threshold
+than the one it was given. `calibrate` and `calibrate_all` disarm the affected
+slots before the range moves; set them again afterwards. Bus alerts are
+absolutely scaled and survive untouched.
+
+Thresholds round to the nearest LSB, so a value read back through
+`Ina4230::alert` is the one you supplied, not the one the device holds.
+
 ## Error handling
 
 `Ina4230Error` is small on purpose: overflow conditions are reported through
 `Flags`, not as errors, because an error can carry only one of them.
 
-```rust,ignore
+```rust,no_run
+# use embedded_hal_mock::eh1::i2c::Mock;
+# use ina4230::{AddrPinState, AddressPins, Channel, CurrentSensor, Ina4230, Ina4230Error};
+# macro_rules! info { ($($t:tt)*) => { { let _ = ($($t)*); } } }
+# macro_rules! error { ($($t:tt)*) => { { let _ = ($($t)*); } } }
+# async fn example() {
+# let i2c = Mock::new(&[]);
+# let mut sensor = Ina4230::new(i2c, AddressPins { a0: AddrPinState::Gnd, a1: AddrPinState::Gnd });
 match sensor.current(Channel::Ch1).await {
     Ok(i) => info!("{} mA", i.to_milliamps()),
     Err(Ina4230Error::NotCalibrated(ch)) => error!("calibrate {:?} first", ch),
     Err(Ina4230Error::Bus(e)) => error!("I²C error: {:?}", e),
+    Err(e) => error!("unexpected error: {:?}", e),
 }
+# }
+# fn main() { tokio::runtime::Runtime::new().unwrap().block_on(example()); }
 ```
+
+`Ina4230Error` is `#[non_exhaustive]`, so a wildcard arm is required: code
+outside this crate cannot match it exhaustively, and new variants are not a
+breaking change. The arm above is unreachable for `current()` — that call
+yields only `Bus` or `NotCalibrated` — but the compiler cannot know that.
 
 `NotCalibrated` is detected before any bus traffic is generated.
 
@@ -320,17 +439,6 @@ Note the column order: A1 first, matching the datasheet.
 The following register controls and device protocols are defined by
 `INA4230.ddsl` or the datasheet, but have no high-level API yet:
 
-- **Alert configuration** (`ALERT_CONFIG1..4`, addresses `0x07`, `0x0F`,
-  `0x17`, `0x1F`). Selects the alert function — shunt over/under limit, bus
-  over/under limit, power over limit — and the channel it applies to.
-  Encodings 0, 6 and 7 are all documented as "reserved, no effect", so they
-  decode to a single `NoEffect` variant.
-- **Alert limits** (`ALERT_LIMIT1..4`, addresses `0x06`, `0x0E`, `0x16`,
-  `0x1E`). The format follows the result register the selected alert function
-  refers to: signed 16-bit for shunt limits, unsigned 15-bit for bus limits
-  (bit 15 reserved), and unsigned 16-bit for power limits. Representing that
-  reinterpretation safely is the interesting part of the design, and the
-  reason these are not simply exposed as a `u16` setter.
 - **`CONFIG2` alert behaviour**: `CNVR_MASK`, `ENOF_MASK`, `ALERT_LATCH`, and
   `ALERT_POL`.
 - **`CONFIG1` timing and operating mode**: `AVG`, `VBUSCT`, `VSHCT`, and
@@ -343,9 +451,8 @@ The following register controls and device protocols are defined by
   (`0x00`, `0x06`). These are bus protocols rather than registers, so they are
   not part of the generated register layer either.
 
-The `FLAGS` register already exposes the four alert-limit bits via
-`Flags::limit_alerts()`, so alert conditions are observable even though they
-cannot yet be configured through this crate.
+The `FLAGS` register exposes the four alert-limit bits via
+`Flags::limit_alerts()`; see "Alerts" for configuring their slots and limits.
 
 ### Out of scope
 
