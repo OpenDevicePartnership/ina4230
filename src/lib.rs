@@ -119,6 +119,9 @@ impl<I2c: embedded_hal_async::i2c::I2c> device_driver::AsyncRegisterInterface fo
 /// after each write of `CONFIG1` and then stops; a *continuous* mode repeats
 /// the conversion sequence indefinitely.
 ///
+/// The mode also decides which conversion terms occur in a round-robin cycle:
+/// see [`ConversionTiming`] for how long each of them takes.
+///
 /// [`Default`] is [`OperatingMode::ContinuousShuntAndBus`], the power-on value.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -190,6 +193,231 @@ impl From<device::Mode> for OperatingMode {
     }
 }
 
+// ── Conversion timing ─────────────────────────────────────────────────────────
+
+/// The averaging count selected by `CONFIG1.AVG` (datasheet Table 7-3).
+///
+/// The device averages this many conversions before updating the output
+/// registers and setting `CVRF`, so a larger count trades a slower output
+/// update for a quieter reading. Limit alerts are unaffected: the device
+/// compares every conversion rather than the average, as
+/// [`Flags::limit_alerts`] describes.
+///
+/// This is device-global, not per-channel.
+///
+/// [`Default`] is [`Averaging::Samples1`], the power-on value.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum Averaging {
+    /// `000` — 1 sample; no averaging. The power-on default.
+    #[default]
+    Samples1 = 0,
+    /// `001` — 4 samples.
+    Samples4 = 1,
+    /// `010` — 16 samples.
+    Samples16 = 2,
+    /// `011` — 64 samples.
+    Samples64 = 3,
+    /// `100` — 128 samples.
+    Samples128 = 4,
+    /// `101` — 256 samples.
+    Samples256 = 5,
+    /// `110` — 512 samples.
+    Samples512 = 6,
+    /// `111` — 1024 samples.
+    Samples1024 = 7,
+}
+
+/// The bus-voltage conversion time selected by `CONFIG1.VBUSCT` (datasheet
+/// Table 7-3).
+///
+/// This is the time one bus-voltage conversion takes. It applies only when the
+/// selected [`OperatingMode`] measures bus voltage.
+///
+/// This is device-global, not per-channel.
+///
+/// [`Default`] is [`BusConversionTime::Microseconds1100`], the power-on value.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum BusConversionTime {
+    /// `000` — 140 µs.
+    Microseconds140 = 0,
+    /// `001` — 204 µs.
+    Microseconds204 = 1,
+    /// `010` — 332 µs.
+    Microseconds332 = 2,
+    /// `011` — 588 µs.
+    Microseconds588 = 3,
+    /// `100` — 1100 µs. The power-on default.
+    #[default]
+    Microseconds1100 = 4,
+    /// `101` — 2116 µs.
+    Microseconds2116 = 5,
+    /// `110` — 4156 µs.
+    Microseconds4156 = 6,
+    /// `111` — 8244 µs.
+    Microseconds8244 = 7,
+}
+
+/// The shunt-voltage conversion time selected by `CONFIG1.VSHCT` (datasheet
+/// Table 7-3).
+///
+/// This is the time one shunt-voltage conversion takes. It applies only when
+/// the selected [`OperatingMode`] measures shunt voltage.
+///
+/// This is device-global, not per-channel.
+///
+/// [`Default`] is [`ShuntConversionTime::Microseconds1100`], the power-on
+/// value.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum ShuntConversionTime {
+    /// `000` — 140 µs.
+    Microseconds140 = 0,
+    /// `001` — 204 µs.
+    Microseconds204 = 1,
+    /// `010` — 332 µs.
+    Microseconds332 = 2,
+    /// `011` — 588 µs.
+    Microseconds588 = 3,
+    /// `100` — 1100 µs. The power-on default.
+    #[default]
+    Microseconds1100 = 4,
+    /// `101` — 2116 µs.
+    Microseconds2116 = 5,
+    /// `110` — 4156 µs.
+    Microseconds4156 = 6,
+    /// `111` — 8244 µs.
+    Microseconds8244 = 7,
+}
+
+/// The `CONFIG1` conversion timing: `AVG`, `VBUSCT`, and `VSHCT` (datasheet
+/// Table 7-3 and 6.4.4).
+///
+/// All three fields are device-global, not per-channel, and together they set
+/// how long a round-robin cycle takes and how much the readings are filtered.
+/// Which conversion terms actually occur is decided by [`OperatingMode`].
+///
+/// # Cycle time
+///
+/// For `N` active channels and an averaging count of `A`, one complete
+/// round-robin cycle takes `A × N × (T_shunt + T_bus)` when the selected
+/// [`OperatingMode`] measures both. Omit `T_shunt` or `T_bus` when the mode
+/// disables that measurement; disabled channels are also omitted. Current,
+/// power, and energy calculations run in the background and add no conversion
+/// time (datasheet 6.3.2 and 6.4.4). For example, with all four channels
+/// active, 16-sample averaging, a 588 µs shunt conversion, and a 204 µs bus
+/// conversion, a complete cycle takes `16 × 4 × (588 µs + 204 µs) = 50,688 µs
+/// = 50.688 ms`. A triggered conversion completes after that cycle; in
+/// continuous mode `CVRF` is set after each such cycle. Polling should allow
+/// at least this duration plus device and bus scheduling margin.
+///
+/// [`Default`] is the power-on timing: one sample and 1100 µs for each
+/// conversion.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ConversionTiming {
+    /// The averaging count, `CONFIG1.AVG`.
+    pub averaging: Averaging,
+    /// The bus-voltage conversion time, `CONFIG1.VBUSCT`.
+    pub bus_conversion_time: BusConversionTime,
+    /// The shunt-voltage conversion time, `CONFIG1.VSHCT`.
+    pub shunt_conversion_time: ShuntConversionTime,
+}
+
+impl From<Averaging> for device::Averaging {
+    fn from(averaging: Averaging) -> Self {
+        match averaging {
+            Averaging::Samples1 => Self::Num1,
+            Averaging::Samples4 => Self::Num4,
+            Averaging::Samples16 => Self::Num16,
+            Averaging::Samples64 => Self::Num64,
+            Averaging::Samples128 => Self::Num128,
+            Averaging::Samples256 => Self::Num256,
+            Averaging::Samples512 => Self::Num512,
+            Averaging::Samples1024 => Self::Num1024,
+        }
+    }
+}
+
+impl From<device::Averaging> for Averaging {
+    fn from(averaging: device::Averaging) -> Self {
+        match averaging {
+            device::Averaging::Num1 => Self::Samples1,
+            device::Averaging::Num4 => Self::Samples4,
+            device::Averaging::Num16 => Self::Samples16,
+            device::Averaging::Num64 => Self::Samples64,
+            device::Averaging::Num128 => Self::Samples128,
+            device::Averaging::Num256 => Self::Samples256,
+            device::Averaging::Num512 => Self::Samples512,
+            device::Averaging::Num1024 => Self::Samples1024,
+        }
+    }
+}
+
+impl From<BusConversionTime> for device::BusConversionTime {
+    fn from(time: BusConversionTime) -> Self {
+        match time {
+            BusConversionTime::Microseconds140 => Self::Us140,
+            BusConversionTime::Microseconds204 => Self::Us204,
+            BusConversionTime::Microseconds332 => Self::Us332,
+            BusConversionTime::Microseconds588 => Self::Us588,
+            BusConversionTime::Microseconds1100 => Self::Us1100,
+            BusConversionTime::Microseconds2116 => Self::Us2116,
+            BusConversionTime::Microseconds4156 => Self::Us4156,
+            BusConversionTime::Microseconds8244 => Self::Us8244,
+        }
+    }
+}
+
+impl From<device::BusConversionTime> for BusConversionTime {
+    fn from(time: device::BusConversionTime) -> Self {
+        match time {
+            device::BusConversionTime::Us140 => Self::Microseconds140,
+            device::BusConversionTime::Us204 => Self::Microseconds204,
+            device::BusConversionTime::Us332 => Self::Microseconds332,
+            device::BusConversionTime::Us588 => Self::Microseconds588,
+            device::BusConversionTime::Us1100 => Self::Microseconds1100,
+            device::BusConversionTime::Us2116 => Self::Microseconds2116,
+            device::BusConversionTime::Us4156 => Self::Microseconds4156,
+            device::BusConversionTime::Us8244 => Self::Microseconds8244,
+        }
+    }
+}
+
+impl From<ShuntConversionTime> for device::ShuntConversionTime {
+    fn from(time: ShuntConversionTime) -> Self {
+        match time {
+            ShuntConversionTime::Microseconds140 => Self::Us140,
+            ShuntConversionTime::Microseconds204 => Self::Us204,
+            ShuntConversionTime::Microseconds332 => Self::Us332,
+            ShuntConversionTime::Microseconds588 => Self::Us588,
+            ShuntConversionTime::Microseconds1100 => Self::Us1100,
+            ShuntConversionTime::Microseconds2116 => Self::Us2116,
+            ShuntConversionTime::Microseconds4156 => Self::Us4156,
+            ShuntConversionTime::Microseconds8244 => Self::Us8244,
+        }
+    }
+}
+
+impl From<device::ShuntConversionTime> for ShuntConversionTime {
+    fn from(time: device::ShuntConversionTime) -> Self {
+        match time {
+            device::ShuntConversionTime::Us140 => Self::Microseconds140,
+            device::ShuntConversionTime::Us204 => Self::Microseconds204,
+            device::ShuntConversionTime::Us332 => Self::Microseconds332,
+            device::ShuntConversionTime::Us588 => Self::Microseconds588,
+            device::ShuntConversionTime::Us1100 => Self::Microseconds1100,
+            device::ShuntConversionTime::Us2116 => Self::Microseconds2116,
+            device::ShuntConversionTime::Us4156 => Self::Microseconds4156,
+            device::ShuntConversionTime::Us8244 => Self::Microseconds8244,
+        }
+    }
+}
+
 // ── Flags ─────────────────────────────────────────────────────────────────────
 
 /// A snapshot of the `FLAGS` register.
@@ -212,6 +440,10 @@ impl Flags {
     /// This is the completion signal for the triggered modes of
     /// [`OperatingMode`]: after [`Ina4230::set_mode`] starts a sequence, this
     /// is what says the results in the measurement registers belong to it.
+    ///
+    /// [`ConversionTiming`] sets how long that takes: the flag is set once per
+    /// averaged round-robin cycle, and any `CONFIG1` write — including
+    /// [`Ina4230::set_conversion_timing`] — clears it again.
     #[must_use]
     pub const fn conversion_ready(self) -> bool {
         self.conversion_ready
@@ -273,16 +505,13 @@ impl Flags {
     ///
     /// # These do not correspond to the averaged readings
     ///
-    /// The device compares the alert limit against *every* conversion, not
-    /// against the averaged result that reaches the output registers
-    /// (datasheet 6.3.5). With averaging enabled a limit flag can therefore
-    /// report an excursion that appears in no value [`Ina4230`] can read back,
-    /// and the flag disagreeing with the measurement registers is correct
-    /// behaviour rather than a fault.
-    ///
-    /// This crate does not configure `AVG` and the power-on default is a
-    /// single sample, so the two agree unless something else on the bus has
-    /// programmed `CONFIG1`.
+    /// The device compares each alert limit against *every* conversion, not against
+    /// the averaged result that reaches the output registers (datasheet 6.3.2 and
+    /// 6.3.5). When [`Averaging`] is greater than one sample, a limit flag can
+    /// therefore report an excursion that appears in no value [`Ina4230`] can read
+    /// back. This disagreement is correct device behaviour, not a fault. See
+    /// [`ConversionTiming`] for the related response-time and noise trade-off, and
+    /// [`Ina4230::read_flags`] for the read-to-clear behavior of latched alerts.
     #[must_use]
     pub const fn limit_alerts(self) -> [bool; 4] {
         self.limit_alerts
@@ -533,6 +762,10 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// latched alert observed by an intermediate read of that loop is cleared
     /// in the device and will not appear again.
     ///
+    /// [`ConversionTiming`] sets how long such a loop must wait, and any
+    /// `CONFIG1` write — including [`Ina4230::set_conversion_timing`] — clears
+    /// `CVRF` and pushes the next completion out by a further cycle.
+    ///
     /// # Errors
     ///
     /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs.
@@ -599,6 +832,7 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// read-modify-write and still starts another conversion sequence; the
     /// write is never suppressed as redundant. Poll
     /// `read_flags().await?.conversion_ready()` before reading the results.
+    /// How long that takes is set by [`ConversionTiming`].
     ///
     /// # Shutdown preserves calibration
     ///
@@ -616,6 +850,274 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// on the transaction.
     pub async fn set_mode(&mut self, mode: OperatingMode) -> Result<(), Ina4230Error<I2c::Error>> {
         self.device.config_1().modify_async(|w| w.set_mode(mode.into())).await
+    }
+
+    // ── Conversion timing ─────────────────────────────────────────────────────
+
+    /// Read `CONFIG1.AVG`, `VBUSCT`, and `VSHCT` as a [`ConversionTiming`].
+    ///
+    /// All three fields come from a single register read, so they are a
+    /// coherent snapshot. This reads the device rather than a cache, so it
+    /// reflects a power cycle, an EN-pin toggle, a General Call reset, or a
+    /// write by another bus controller.
+    ///
+    /// To read one field on its own, use [`Ina4230::averaging`],
+    /// [`Ina4230::bus_conversion_time`], or
+    /// [`Ina4230::shunt_conversion_time`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs.
+    pub async fn conversion_timing(&mut self) -> Result<ConversionTiming, Ina4230Error<I2c::Error>> {
+        let r = self.device.config_1().read_async().await?;
+        Ok(ConversionTiming {
+            averaging: r.avg().into(),
+            bus_conversion_time: r.vbusct().into(),
+            shunt_conversion_time: r.vshct().into(),
+        })
+    }
+
+    /// Set `CONFIG1.AVG`, `VBUSCT`, and `VSHCT` together.
+    ///
+    /// Performs a single read-modify-write of `CONFIG1`, so only bits 11:3
+    /// move and `ACTIVE_CHANNEL` and `MODE` keep the values read back from the
+    /// device. This is the cheapest and only coherent way to change more than
+    /// one timing field: [`Ina4230::set_averaging`],
+    /// [`Ina4230::set_bus_conversion_time`], and
+    /// [`Ina4230::set_shunt_conversion_time`] each cost their own
+    /// read-modify-write and their own `CVRF` clear, and using several of them
+    /// in sequence exposes intermediate timing configurations to the device.
+    ///
+    /// # Writing clears conversion ready
+    ///
+    /// Every call writes `CONFIG1`, and that clears `CVRF` (datasheet 6.4.1
+    /// and Table 7-20). A poll in progress through [`Ina4230::read_flags`]
+    /// will therefore wait for the next conversion to complete; see
+    /// [`Flags::conversion_ready`].
+    ///
+    /// # Writing retriggers a triggered mode
+    ///
+    /// Triggering happens on the write, not on a change of value. If the
+    /// selected [`OperatingMode`] is a triggered one, every call starts
+    /// another conversion sequence even when the requested timing is identical
+    /// to what the device already holds; the write is never suppressed as
+    /// redundant. See [`Ina4230::set_mode`].
+    ///
+    /// # Response time against noise
+    ///
+    /// Short conversion times improve alert response but admit more noise;
+    /// long conversion times reverse that trade-off. Averaging delays output
+    /// register updates and `CVRF` without slowing limit checks, because the
+    /// device compares every conversion rather than the averaged result — see
+    /// [`Flags::limit_alerts`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. A failed read
+    /// aborts before anything is written; a failed write leaves the device's
+    /// timing and triggered-conversion state unknown, since I²C gives no way
+    /// to learn whether the device acted on the transaction.
+    pub async fn set_conversion_timing(&mut self, timing: ConversionTiming) -> Result<(), Ina4230Error<I2c::Error>> {
+        self.device
+            .config_1()
+            .modify_async(|w| {
+                w.set_avg(timing.averaging.into());
+                w.set_vbusct(timing.bus_conversion_time.into());
+                w.set_vshct(timing.shunt_conversion_time.into());
+            })
+            .await
+    }
+
+    /// Read `CONFIG1.AVG` as an [`Averaging`].
+    ///
+    /// The averaging count is device-global, not per-channel; it is the
+    /// [`ConversionTiming::averaging`] field. Limit alerts do not see it: the
+    /// device compares every conversion rather than the average, as
+    /// [`Flags::limit_alerts`] describes.
+    ///
+    /// This performs one uncached device read, so it reflects a power cycle,
+    /// an EN-pin toggle, a General Call reset, or a write by another bus
+    /// controller. See [`Ina4230::set_averaging`] for the write side effects,
+    /// and [`Ina4230::conversion_timing`] to read all three timing fields as
+    /// one coherent snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs.
+    pub async fn averaging(&mut self) -> Result<Averaging, Ina4230Error<I2c::Error>> {
+        Ok(self.device.config_1().read_async().await?.avg().into())
+    }
+
+    /// Set `CONFIG1.AVG`.
+    ///
+    /// The averaging count is device-global, not per-channel; it is the
+    /// [`ConversionTiming::averaging`] field, and its encodings are
+    /// [`Averaging`]. Read it back with [`Ina4230::averaging`]. Averaging
+    /// quietens the measurement registers but not the limit alerts, which
+    /// compare every conversion — see [`Flags::limit_alerts`].
+    ///
+    /// Performs a read-modify-write of `CONFIG1`, so only bits 11:9 move and
+    /// every other field keeps the value read back from the device.
+    ///
+    /// # Prefer the combined setter for multi-field changes
+    ///
+    /// [`Ina4230::set_conversion_timing`] is the cheaper and coherent path
+    /// whenever more than one timing field changes: one read-modify-write and
+    /// one `CVRF` clear, instead of one of each per independent setter, and no
+    /// intermediate timing configuration reaching the device.
+    ///
+    /// # Writing clears conversion ready
+    ///
+    /// Every call writes `CONFIG1`, and that clears `CVRF` (datasheet 6.4.1
+    /// and Table 7-20). A poll in progress through [`Ina4230::read_flags`]
+    /// will therefore wait for the next conversion to complete; see
+    /// [`Flags::conversion_ready`].
+    ///
+    /// # Writing retriggers a triggered mode
+    ///
+    /// If the selected [`OperatingMode`] is a triggered one, every call starts
+    /// another conversion sequence even when the requested count is unchanged;
+    /// the write is never suppressed as redundant. See [`Ina4230::set_mode`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. A failed read
+    /// aborts before anything is written; a failed write leaves the device's
+    /// timing and triggered-conversion state unknown, since I²C gives no way
+    /// to learn whether the device acted on the transaction.
+    pub async fn set_averaging(&mut self, averaging: Averaging) -> Result<(), Ina4230Error<I2c::Error>> {
+        self.device
+            .config_1()
+            .modify_async(|w| w.set_avg(averaging.into()))
+            .await
+    }
+
+    /// Read `CONFIG1.VBUSCT` as a [`BusConversionTime`].
+    ///
+    /// The bus-voltage conversion time is device-global, not per-channel; it
+    /// is the [`ConversionTiming::bus_conversion_time`] field.
+    ///
+    /// This performs one uncached device read, so it reflects a power cycle,
+    /// an EN-pin toggle, a General Call reset, or a write by another bus
+    /// controller. See [`Ina4230::set_bus_conversion_time`] for the write side
+    /// effects, and [`Ina4230::conversion_timing`] to read all three timing
+    /// fields as one coherent snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs.
+    pub async fn bus_conversion_time(&mut self) -> Result<BusConversionTime, Ina4230Error<I2c::Error>> {
+        Ok(self.device.config_1().read_async().await?.vbusct().into())
+    }
+
+    /// Set `CONFIG1.VBUSCT`.
+    ///
+    /// The bus-voltage conversion time is device-global, not per-channel; it
+    /// is the [`ConversionTiming::bus_conversion_time`] field, and its
+    /// encodings are [`BusConversionTime`]. Read it back with
+    /// [`Ina4230::bus_conversion_time`].
+    ///
+    /// Performs a read-modify-write of `CONFIG1`, so only bits 8:6 move and
+    /// every other field keeps the value read back from the device.
+    ///
+    /// # Prefer the combined setter for multi-field changes
+    ///
+    /// [`Ina4230::set_conversion_timing`] is the cheaper and coherent path
+    /// whenever more than one timing field changes: one read-modify-write and
+    /// one `CVRF` clear, instead of one of each per independent setter, and no
+    /// intermediate timing configuration reaching the device.
+    ///
+    /// # Writing clears conversion ready
+    ///
+    /// Every call writes `CONFIG1`, and that clears `CVRF` (datasheet 6.4.1
+    /// and Table 7-20). A poll in progress through [`Ina4230::read_flags`]
+    /// will therefore wait for the next conversion to complete; see
+    /// [`Flags::conversion_ready`].
+    ///
+    /// # Writing retriggers a triggered mode
+    ///
+    /// If the selected [`OperatingMode`] is a triggered one, every call starts
+    /// another conversion sequence even when the requested time is unchanged;
+    /// the write is never suppressed as redundant. See [`Ina4230::set_mode`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. A failed read
+    /// aborts before anything is written; a failed write leaves the device's
+    /// timing and triggered-conversion state unknown, since I²C gives no way
+    /// to learn whether the device acted on the transaction.
+    pub async fn set_bus_conversion_time(
+        &mut self,
+        conversion_time: BusConversionTime,
+    ) -> Result<(), Ina4230Error<I2c::Error>> {
+        self.device
+            .config_1()
+            .modify_async(|w| w.set_vbusct(conversion_time.into()))
+            .await
+    }
+
+    /// Read `CONFIG1.VSHCT` as a [`ShuntConversionTime`].
+    ///
+    /// The shunt-voltage conversion time is device-global, not per-channel; it
+    /// is the [`ConversionTiming::shunt_conversion_time`] field.
+    ///
+    /// This performs one uncached device read, so it reflects a power cycle,
+    /// an EN-pin toggle, a General Call reset, or a write by another bus
+    /// controller. See [`Ina4230::set_shunt_conversion_time`] for the write
+    /// side effects, and [`Ina4230::conversion_timing`] to read all three
+    /// timing fields as one coherent snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs.
+    pub async fn shunt_conversion_time(&mut self) -> Result<ShuntConversionTime, Ina4230Error<I2c::Error>> {
+        Ok(self.device.config_1().read_async().await?.vshct().into())
+    }
+
+    /// Set `CONFIG1.VSHCT`.
+    ///
+    /// The shunt-voltage conversion time is device-global, not per-channel; it
+    /// is the [`ConversionTiming::shunt_conversion_time`] field, and its
+    /// encodings are [`ShuntConversionTime`]. Read it back with
+    /// [`Ina4230::shunt_conversion_time`].
+    ///
+    /// Performs a read-modify-write of `CONFIG1`, so only bits 5:3 move and
+    /// every other field keeps the value read back from the device.
+    ///
+    /// # Prefer the combined setter for multi-field changes
+    ///
+    /// [`Ina4230::set_conversion_timing`] is the cheaper and coherent path
+    /// whenever more than one timing field changes: one read-modify-write and
+    /// one `CVRF` clear, instead of one of each per independent setter, and no
+    /// intermediate timing configuration reaching the device.
+    ///
+    /// # Writing clears conversion ready
+    ///
+    /// Every call writes `CONFIG1`, and that clears `CVRF` (datasheet 6.4.1
+    /// and Table 7-20). A poll in progress through [`Ina4230::read_flags`]
+    /// will therefore wait for the next conversion to complete; see
+    /// [`Flags::conversion_ready`].
+    ///
+    /// # Writing retriggers a triggered mode
+    ///
+    /// If the selected [`OperatingMode`] is a triggered one, every call starts
+    /// another conversion sequence even when the requested time is unchanged;
+    /// the write is never suppressed as redundant. See [`Ina4230::set_mode`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. A failed read
+    /// aborts before anything is written; a failed write leaves the device's
+    /// timing and triggered-conversion state unknown, since I²C gives no way
+    /// to learn whether the device acted on the transaction.
+    pub async fn set_shunt_conversion_time(
+        &mut self,
+        conversion_time: ShuntConversionTime,
+    ) -> Result<(), Ina4230Error<I2c::Error>> {
+        self.device
+            .config_1()
+            .modify_async(|w| w.set_vshct(conversion_time.into()))
+            .await
     }
 
     // ── Calibration ───────────────────────────────────────────────────────────
