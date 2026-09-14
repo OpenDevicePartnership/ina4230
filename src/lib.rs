@@ -545,7 +545,9 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// The single `CONFIG2` write moves all four range bits, so every shunt and
     /// power threshold in every slot is about to mean something else. All of
     /// them are disarmed first, for the reasons given on [`Ina4230::calibrate`].
-    /// Bus thresholds are absolutely scaled and are left armed.
+    /// Bus thresholds are absolutely scaled and are left armed. If disarming
+    /// fails partway through, inspect [`Ina4230::alert`] to see which slots
+    /// remain armed.
     pub async fn calibrate_all(&mut self, calibrations: [Calibration; 4]) -> Result<(), Ina4230Error<I2c::Error>> {
         // One CONFIG2 write moves all four range bits, so every channel's
         // scaled alerts are about to become wrong.

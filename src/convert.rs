@@ -4,14 +4,11 @@
 //! the input type it always produces an output, with no failure case and no
 //! panic. The encode functions are pure but *not* total — a caller-supplied
 //! threshold may not be representable in a 16-bit register at the channel's
-//! configured scale, so they return [`Option`]. Purity is the property that
-//! matters: it is what keeps this module testable by walking its input domain
-//! on the host, with no bus involved.
-//!
-//! Because nothing here touches a bus, these functions are testable by walking
-//! their entire input domain on the host. [`decode_bus_voltage`] has 65,536
-//! inputs; [`decode_shunt_voltage`] has 131,072. Both are exhausted in the
-//! test suite in well under a millisecond.
+//! configured scale, so they return [`Option`]. Because every function is pure
+//! and nothing here touches a bus, the test suite walks their input domains on
+//! the host. [`decode_bus_voltage`] has 65,536 inputs and
+//! [`decode_shunt_voltage`] has 131,072; both are exhausted in well under a
+//! millisecond.
 
 use crate::units::{AdcRange, BusVoltage, Calibration, Channel, Current, Energy, Power, ShuntVoltage};
 

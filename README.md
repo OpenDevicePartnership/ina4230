@@ -269,6 +269,55 @@ behaviour. It cannot arise through this crate today, because `AVG` is not
 configurable here and the power-on default is a single sample, but it can if
 another controller on the bus has programmed `CONFIG1`.
 
+## Alerts
+
+The device has four alert slots. Each pairs a condition and a target channel
+with a threshold, and asserts the ALERT pin when the condition is met.
+
+A slot is not a channel: any slot can watch any channel, which is why
+`AlertSlot` and `Channel` are separate types. The datasheet calls the slots
+`ALERT1`..`ALERT4` (Table 7-7).
+
+```rust,ignore
+use ina4230::{Alert, AlertSlot, BusVoltage, Channel, ShuntVoltage};
+
+// Undervoltage on channel 2, watched by slot 1.
+sensor.set_alert(
+    AlertSlot::One,
+    Channel::Ch2,
+    Alert::BusUnder(BusVoltage::from_microvolts(11_000_000)),
+).await?;
+
+// Overcurrent on channel 1, expressed as a shunt voltage, watched by slot 2.
+sensor.set_alert(
+    AlertSlot::Two,
+    Channel::Ch1,
+    Alert::ShuntOver(ShuntVoltage::from_nanovolts(40_000_000)),
+).await?;
+
+sensor.clear_alert(AlertSlot::One).await?;
+```
+
+Each `Alert` variant carries its threshold in the unit that variant implies, so
+a bus threshold cannot be paired with a shunt condition — there is no way to
+write it.
+
+**Shunt and power thresholds need the target channel to be calibrated.** Their
+scale comes from the channel's `AdcRange` and `CURRENT_LSB`; `set_alert`
+returns `NotCalibrated` otherwise, before touching the bus. Bus thresholds have
+a fixed 1.6 mV LSB and work on an uncalibrated channel.
+
+**Recalibrating a channel disarms its shunt and power alerts.** `ALERT_LIMIT`
+holds raw counts: shunt limits depend on `AdcRange`, whose two scales differ by
+a factor of four, and power limits depend on `CURRENT_LSB`. A slot left armed
+across a recalibration could therefore silently enforce a different threshold
+than the one it was given. `calibrate` and `calibrate_all` disarm the affected
+slots before the range moves; set them again afterwards. Bus alerts are
+absolutely scaled and survive untouched.
+
+Thresholds round to the nearest LSB, so a value read back through
+`Ina4230::alert` is the one you supplied, not the one the device holds.
+
 ## Error handling
 
 `Ina4230Error` is small on purpose: overflow conditions are reported through
@@ -320,17 +369,6 @@ Note the column order: A1 first, matching the datasheet.
 The following register controls and device protocols are defined by
 `INA4230.ddsl` or the datasheet, but have no high-level API yet:
 
-- **Alert configuration** (`ALERT_CONFIG1..4`, addresses `0x07`, `0x0F`,
-  `0x17`, `0x1F`). Selects the alert function — shunt over/under limit, bus
-  over/under limit, power over limit — and the channel it applies to.
-  Encodings 0, 6 and 7 are all documented as "reserved, no effect", so they
-  decode to a single `NoEffect` variant.
-- **Alert limits** (`ALERT_LIMIT1..4`, addresses `0x06`, `0x0E`, `0x16`,
-  `0x1E`). The format follows the result register the selected alert function
-  refers to: signed 16-bit for shunt limits, unsigned 15-bit for bus limits
-  (bit 15 reserved), and unsigned 16-bit for power limits. Representing that
-  reinterpretation safely is the interesting part of the design, and the
-  reason these are not simply exposed as a `u16` setter.
 - **`CONFIG2` alert behaviour**: `CNVR_MASK`, `ENOF_MASK`, `ALERT_LATCH`, and
   `ALERT_POL`.
 - **`CONFIG1` timing and operating mode**: `AVG`, `VBUSCT`, `VSHCT`, and
@@ -343,9 +381,8 @@ The following register controls and device protocols are defined by
   (`0x00`, `0x06`). These are bus protocols rather than registers, so they are
   not part of the generated register layer either.
 
-The `FLAGS` register already exposes the four alert-limit bits via
-`Flags::limit_alerts()`, so alert conditions are observable even though they
-cannot yet be configured through this crate.
+The `FLAGS` register exposes the four alert-limit bits via
+`Flags::limit_alerts()`; see "Alerts" for configuring their slots and limits.
 
 ### Out of scope
 
