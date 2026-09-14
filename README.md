@@ -441,9 +441,8 @@ The following register controls and device protocols are defined by
 
 - **`CONFIG2` alert behaviour**: `CNVR_MASK`, `ENOF_MASK`, `ALERT_LATCH`, and
   `ALERT_POL`.
-- **`CONFIG1` timing and operating mode**: `AVG`, `VBUSCT`, `VSHCT`, and
-  `MODE`. The power-on defaults are used: one sample, 1.1 ms bus and shunt
-  conversion times, and continuous shunt-and-bus conversion.
+- **`CONFIG1` conversion timing**: `AVG`, `VBUSCT`, and `VSHCT`. The power-on
+  defaults are used: one sample and 1.1 ms bus and shunt conversion times.
 - **Energy accumulator reset** (`CONFIG2.ACC_RST`), which also clears the
   energy overflow flags. Until this lands, an energy overflow is unrecoverable
   short of `reset()` and a full recalibration — see "Reading flags".
