@@ -10,8 +10,8 @@ use embedded_hal::i2c::ErrorKind;
 use embedded_hal_mock::eh1::i2c::{Mock, Transaction};
 
 use ina4230::{
-    AdcRange, AddrPinState, AddressPins, Calibration, Channel, CurrentLsb, CurrentSensor, EnergySensor, Ina4230,
-    Ina4230Error, PowerSensor, ShuntResistance, VoltageSensor,
+    AdcRange, AddrPinState, AddressPins, AlertSlot, Calibration, Channel, CurrentLsb, CurrentSensor, EnergySensor,
+    Ina4230, Ina4230Error, PowerSensor, ShuntResistance, VoltageSensor,
 };
 
 /// Address for the default strapping, A0 = A1 = GND.
@@ -392,4 +392,11 @@ async fn read_flags_reports_every_condition_at_once() {
     assert_eq!(flags.limit_alerts(), [true, false, false, false]);
 
     dev.release().done();
+}
+
+#[test]
+fn limit_out_of_range_reports_the_slot() {
+    let e: Ina4230Error<ErrorKind> = Ina4230Error::LimitOutOfRange(AlertSlot::Two);
+    assert_eq!(e, Ina4230Error::LimitOutOfRange(AlertSlot::Two));
+    assert_ne!(e, Ina4230Error::LimitOutOfRange(AlertSlot::Three));
 }

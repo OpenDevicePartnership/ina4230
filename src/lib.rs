@@ -36,6 +36,7 @@ const LARGEST_REG_SIZE_BYTES: usize = 4;
 /// variant would discard the others, and reading the register clears them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub enum Ina4230Error<I2cError> {
     /// An error occurred on the I²C bus.
     Bus(I2cError),
@@ -47,6 +48,16 @@ pub enum Ina4230Error<I2cError> {
     ///
     /// Detected before any bus traffic is generated.
     NotCalibrated(Channel),
+    /// An alert threshold does not fit `ALERT_LIMIT` at the target channel's
+    /// scale.
+    ///
+    /// The representable range depends on the alert kind: ±81.92 mV or
+    /// ±20.48 mV for shunt thresholds depending on [`AdcRange`], 0 to
+    /// 52.4272 V for bus thresholds, and `65535 × 32 × CURRENT_LSB` for power
+    /// thresholds.
+    ///
+    /// Detected before any bus traffic is generated.
+    LimitOutOfRange(AlertSlot),
 }
 
 impl<E: embedded_hal_async::i2c::Error> sensor::Error for Ina4230Error<E> {
@@ -54,6 +65,7 @@ impl<E: embedded_hal_async::i2c::Error> sensor::Error for Ina4230Error<E> {
         match self {
             Self::Bus(_) => sensor::ErrorKind::Peripheral,
             Self::NotCalibrated(_) => sensor::ErrorKind::NotReady,
+            Self::LimitOutOfRange(_) => sensor::ErrorKind::InvalidInput,
         }
     }
 }
