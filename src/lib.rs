@@ -110,6 +110,86 @@ impl<I2c: embedded_hal_async::i2c::I2c> device_driver::AsyncRegisterInterface fo
     }
 }
 
+// ── Operating mode ────────────────────────────────────────────────────────────
+
+/// The operating mode selected by `CONFIG1.MODE` (datasheet Table 7-3).
+///
+/// The mode picks which measurements the ADC performs and whether it performs
+/// them once or forever. A *triggered* mode runs a single conversion sequence
+/// after each write of `CONFIG1` and then stops; a *continuous* mode repeats
+/// the conversion sequence indefinitely.
+///
+/// [`Default`] is [`OperatingMode::ContinuousShuntAndBus`], the power-on value.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum OperatingMode {
+    /// `000` — shutdown.
+    ///
+    /// Conversions stop and the device draws under 4 µA, typically 2.5 µA in
+    /// standby, recovering in about 40 µs (datasheet 6.4.2 and 3). Registers,
+    /// including `SHUNT_CAL` and `CONFIG2.RANGE`, keep their values.
+    Shutdown = 0,
+    /// `001` — one triggered shunt-voltage conversion sequence.
+    ///
+    /// Bus voltage is removed from the round-robin cycle (datasheet 6.3.2).
+    ShuntTriggered = 1,
+    /// `010` — one triggered bus-voltage conversion sequence.
+    ///
+    /// Shunt voltage is removed from the round-robin cycle (datasheet 6.3.2).
+    BusTriggered = 2,
+    /// `011` — one triggered shunt-and-bus conversion sequence.
+    ShuntAndBusTriggered = 3,
+    /// `100` — shutdown, behaviourally identical to [`OperatingMode::Shutdown`].
+    ///
+    /// The field has two encodings for the same state. Prefer
+    /// [`OperatingMode::Shutdown`] in new code; this variant exists so that an
+    /// encoding observed on the device can be reported and written back
+    /// faithfully.
+    ShutdownAlternate = 4,
+    /// `101` — continuous shunt-voltage conversion only.
+    ///
+    /// Bus voltage is removed from the round-robin cycle (datasheet 6.3.2).
+    ContinuousShunt = 5,
+    /// `110` — continuous bus-voltage conversion only.
+    ///
+    /// Shunt voltage is removed from the round-robin cycle (datasheet 6.3.2).
+    ContinuousBus = 6,
+    /// `111` — continuous shunt-and-bus conversion. The power-on default.
+    #[default]
+    ContinuousShuntAndBus = 7,
+}
+
+impl From<OperatingMode> for device::Mode {
+    fn from(mode: OperatingMode) -> Self {
+        match mode {
+            OperatingMode::Shutdown => Self::Shutdown,
+            OperatingMode::ShuntTriggered => Self::ShuntTriggered,
+            OperatingMode::BusTriggered => Self::BusTriggered,
+            OperatingMode::ShuntAndBusTriggered => Self::ShuntAndBusTriggered,
+            OperatingMode::ShutdownAlternate => Self::Shutdown2,
+            OperatingMode::ContinuousShunt => Self::ContinuousShunt,
+            OperatingMode::ContinuousBus => Self::ContinuousBus,
+            OperatingMode::ContinuousShuntAndBus => Self::ContinuousShuntAndBus,
+        }
+    }
+}
+
+impl From<device::Mode> for OperatingMode {
+    fn from(mode: device::Mode) -> Self {
+        match mode {
+            device::Mode::Shutdown => Self::Shutdown,
+            device::Mode::ShuntTriggered => Self::ShuntTriggered,
+            device::Mode::BusTriggered => Self::BusTriggered,
+            device::Mode::ShuntAndBusTriggered => Self::ShuntAndBusTriggered,
+            device::Mode::Shutdown2 => Self::ShutdownAlternate,
+            device::Mode::ContinuousShunt => Self::ContinuousShunt,
+            device::Mode::ContinuousBus => Self::ContinuousBus,
+            device::Mode::ContinuousShuntAndBus => Self::ContinuousShuntAndBus,
+        }
+    }
+}
+
 // ── Flags ─────────────────────────────────────────────────────────────────────
 
 /// A snapshot of the `FLAGS` register.
@@ -128,6 +208,10 @@ pub struct Flags {
 
 impl Flags {
     /// All conversions and averaging are complete.
+    ///
+    /// This is the completion signal for the triggered modes of
+    /// [`OperatingMode`]: after [`Ina4230::set_mode`] starts a sequence, this
+    /// is what says the results in the measurement registers belong to it.
     #[must_use]
     pub const fn conversion_ready(self) -> bool {
         self.conversion_ready
@@ -421,7 +505,9 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
     /// cannot be cleared short of [`Ina4230::reset`] and a recalibration. See
     /// [`Flags::energy_overflow`].
     ///
-    /// To poll for conversion completion:
+    /// To poll for conversion completion — which is also how to wait for a
+    /// conversion started by
+    /// [`set_mode(OperatingMode::*Triggered)`](Ina4230::set_mode):
     ///
     /// ```rust,no_run
     /// # use embedded_hal_mock::eh1::i2c::Mock;
@@ -478,6 +564,58 @@ impl<I2c: embedded_hal_async::i2c::I2c> Ina4230<I2c> {
                 w.set_active_channel(convert::set_channel_bit(w.active_channel(), channel, active));
             })
             .await
+    }
+
+    /// Read `CONFIG1.MODE`.
+    ///
+    /// This reads the device rather than a cache, so it reflects a power
+    /// cycle, an EN-pin toggle, a General Call reset, or a write by another
+    /// bus controller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs.
+    pub async fn mode(&mut self) -> Result<OperatingMode, Ina4230Error<I2c::Error>> {
+        Ok(self.device.config_1().read_async().await?.mode().into())
+    }
+
+    /// Set `CONFIG1.MODE`.
+    ///
+    /// Performs a read-modify-write of `CONFIG1`, so only bits 2:0 move and
+    /// every other field — including `ACTIVE_CHANNEL` — keeps the value read
+    /// back from the device.
+    ///
+    /// # Writing clears conversion ready
+    ///
+    /// Every call writes `CONFIG1`, and that clears `CVRF` (datasheet 6.4.1
+    /// and Table 7-20). A poll in progress through [`Ina4230::read_flags`]
+    /// will therefore wait for the next conversion to complete; see
+    /// [`Flags::conversion_ready`].
+    ///
+    /// # The same triggered mode retriggers
+    ///
+    /// Triggering happens on the write, not on a change of value. Calling this
+    /// with a triggered mode that is already selected still issues the
+    /// read-modify-write and still starts another conversion sequence; the
+    /// write is never suppressed as redundant. Poll
+    /// `read_flags().await?.conversion_ready()` before reading the results.
+    ///
+    /// # Shutdown preserves calibration
+    ///
+    /// Entering [`OperatingMode::Shutdown`] does not reset `SHUNT_CAL` or
+    /// `CONFIG2.RANGE`, so the cached calibration stays valid and measurements
+    /// resume correctly scaled. That is unlike a power cycle, an EN-pin
+    /// toggle, a General Call reset, or [`Ina4230::reset`], all of which
+    /// require calling [`Ina4230::calibrate`] again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Ina4230Error::Bus`] if an I²C bus error occurs. A failed read
+    /// aborts before anything is written; a failed write leaves the device's
+    /// mode unknown, since I²C gives no way to learn whether the device acted
+    /// on the transaction.
+    pub async fn set_mode(&mut self, mode: OperatingMode) -> Result<(), Ina4230Error<I2c::Error>> {
+        self.device.config_1().modify_async(|w| w.set_mode(mode.into())).await
     }
 
     // ── Calibration ───────────────────────────────────────────────────────────

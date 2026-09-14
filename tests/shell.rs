@@ -11,7 +11,8 @@ use embedded_hal_mock::eh1::i2c::{Mock, Transaction};
 
 use ina4230::{
     AdcRange, AddrPinState, AddressPins, Alert, AlertSlot, BusVoltage, Calibration, Channel, CurrentLsb, CurrentSensor,
-    EnergySensor, Ina4230, Ina4230Error, Power, PowerSensor, ShuntResistance, ShuntVoltage, VoltageSensor,
+    EnergySensor, Ina4230, Ina4230Error, OperatingMode, Power, PowerSensor, ShuntResistance, ShuntVoltage,
+    VoltageSensor,
 };
 
 /// Address for the default strapping, A0 = A1 = GND.
@@ -726,5 +727,159 @@ async fn limit_alert_is_indexed_by_slot() {
     assert!(!flags.limit_alert(AlertSlot::Three));
     assert!(!flags.limit_alert(AlertSlot::Four));
     assert_eq!(flags.limit_alerts(), [false, true, false, false]);
+    dev.release().done();
+}
+
+// ── Operating mode ────────────────────────────────────────────────────────────
+
+// CONFIG1 is 0x20, reset 0xF127, and MODE is bits 2:0. Every setter below is
+// therefore a read of 0xF127 followed by a write of 0xF120 | MODE. These
+// vectors pin the MODE encodings only: the reset value has AVG = 0, so it
+// cannot witness field preservation. See
+// `set_mode_preserves_other_config1_fields` for that.
+fn set_mode_expectations(low: u8) -> Vec<Transaction> {
+    vec![
+        Transaction::write_read(ADDR, vec![0x20], vec![0xF1, 0x27]),
+        Transaction::write(ADDR, vec![0x20, 0xF1, low]),
+    ]
+}
+
+#[tokio::test]
+async fn set_mode_writes_shutdown_encoding_000() {
+    let mut dev = sensor(&set_mode_expectations(0x20));
+    dev.set_mode(OperatingMode::Shutdown).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_mode_writes_shunt_triggered_encoding_001() {
+    let mut dev = sensor(&set_mode_expectations(0x21));
+    dev.set_mode(OperatingMode::ShuntTriggered).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_mode_writes_bus_triggered_encoding_010() {
+    let mut dev = sensor(&set_mode_expectations(0x22));
+    dev.set_mode(OperatingMode::BusTriggered).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_mode_writes_shunt_and_bus_triggered_encoding_011() {
+    let mut dev = sensor(&set_mode_expectations(0x23));
+    dev.set_mode(OperatingMode::ShuntAndBusTriggered).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_mode_writes_shutdown_encoding_100() {
+    // The second shutdown encoding is preserved rather than canonicalised.
+    let mut dev = sensor(&set_mode_expectations(0x24));
+    dev.set_mode(OperatingMode::ShutdownAlternate).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_mode_writes_continuous_shunt_encoding_101() {
+    let mut dev = sensor(&set_mode_expectations(0x25));
+    dev.set_mode(OperatingMode::ContinuousShunt).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_mode_writes_continuous_bus_encoding_110() {
+    let mut dev = sensor(&set_mode_expectations(0x26));
+    dev.set_mode(OperatingMode::ContinuousBus).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_mode_writes_continuous_shunt_and_bus_encoding_111() {
+    let mut dev = sensor(&set_mode_expectations(0x27));
+    dev.set_mode(OperatingMode::ContinuousShuntAndBus).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_mode_preserves_other_config1_fields() {
+    // A deliberately non-default CONFIG1 in which every field is non-zero and
+    // distinct, so that dropping any one of them is visible:
+    //
+    //   ACTIVE_CHANNEL 15:12 = 0b1010 = 0xA << 12 = 0xA000
+    //   AVG            11:9  = 0b011  = 3   << 9  = 0x0600
+    //   VBUSCT          8:6  = 0b110  = 6   << 6  = 0x0180
+    //   VSHCT           5:3  = 0b001  = 1   << 3  = 0x0008
+    //   MODE            2:0  = 0b100  = 4         = 0x0004
+    //                                            -> 0xA78C
+    //
+    // Setting MODE to 0b111 must move bits 2:0 only: 0xA78C & !0x7 | 0x7 =
+    // 0xA78F. Writing a freshly defaulted CONFIG1 instead would yield 0xF12F.
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x20], vec![0xA7, 0x8C]),
+        Transaction::write(ADDR, vec![0x20, 0xA7, 0x8F]),
+    ]);
+    dev.set_mode(OperatingMode::ContinuousShuntAndBus).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn mode_reads_every_encoding() {
+    // Both shutdown encodings must come back distinct: the getter reports what
+    // the device holds, it does not canonicalise.
+    let expected = [
+        (0x20u8, OperatingMode::Shutdown),
+        (0x21, OperatingMode::ShuntTriggered),
+        (0x22, OperatingMode::BusTriggered),
+        (0x23, OperatingMode::ShuntAndBusTriggered),
+        (0x24, OperatingMode::ShutdownAlternate),
+        (0x25, OperatingMode::ContinuousShunt),
+        (0x26, OperatingMode::ContinuousBus),
+        (0x27, OperatingMode::ContinuousShuntAndBus),
+    ];
+
+    let expectations: Vec<_> = expected
+        .iter()
+        .map(|&(low, _)| Transaction::write_read(ADDR, vec![0x20], vec![0xF1, low]))
+        .collect();
+
+    let mut dev = sensor(&expectations);
+    for (low, mode) in expected {
+        assert_eq!(dev.mode().await.unwrap(), mode, "encoding 0x{low:02X}");
+    }
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn setting_the_same_triggered_mode_still_writes_config1() {
+    // Triggering happens on the write, not on a change of value, so an
+    // equality short-circuit would silently stop retriggering.
+    let expectations = vec![
+        Transaction::write_read(ADDR, vec![0x20], vec![0xF1, 0x21]),
+        Transaction::write(ADDR, vec![0x20, 0xF1, 0x21]),
+    ];
+    let mut dev = sensor(&expectations);
+    dev.set_mode(OperatingMode::ShuntTriggered).await.unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn shutdown_preserves_cached_calibration() {
+    // Shutdown does not reset SHUNT_CAL or CONFIG2.RANGE, so the cache stays
+    // valid across it.
+    let expectations = vec![
+        // calibrate CH1
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0x00]),
+        Transaction::write(ADDR, vec![0x05, 0x05, 0x00]),
+        // set_mode(Shutdown)
+        Transaction::write_read(ADDR, vec![0x20], vec![0xF1, 0x27]),
+        Transaction::write(ADDR, vec![0x20, 0xF1, 0x20]),
+    ];
+    let mut dev = sensor(&expectations);
+    dev.calibrate(Channel::Ch1, example_cal()).await.unwrap();
+    dev.set_mode(OperatingMode::Shutdown).await.unwrap();
+
+    assert_eq!(dev.calibration(Channel::Ch1), Some(example_cal()));
     dev.release().done();
 }
