@@ -10,9 +10,10 @@ use embedded_hal::i2c::ErrorKind;
 use embedded_hal_mock::eh1::i2c::{Mock, Transaction};
 
 use ina4230::{
-    AdcRange, AddrPinState, AddressPins, Alert, AlertSlot, Averaging, BusConversionTime, BusVoltage, Calibration,
-    Channel, ConversionTiming, CurrentLsb, CurrentSensor, EnergySensor, Ina4230, Ina4230Error, OperatingMode, Power,
-    PowerSensor, ShuntConversionTime, ShuntResistance, ShuntVoltage, VoltageSensor,
+    AdcRange, AddrPinState, AddressPins, Alert, AlertLatch, AlertPinConfig, AlertPolarity, AlertSlot, Averaging,
+    BusConversionTime, BusVoltage, Calibration, Channel, ConversionTiming, CurrentLsb, CurrentSensor, EnergySensor,
+    Ina4230, Ina4230Error, OperatingMode, Power, PowerSensor, ShuntConversionTime, ShuntResistance, ShuntVoltage,
+    VoltageSensor,
 };
 
 /// Address for the default strapping, A0 = A1 = GND.
@@ -1226,5 +1227,126 @@ async fn set_shunt_conversion_time_preserves_other_config1_fields_and_round_trip
         dev.shunt_conversion_time().await.unwrap(),
         ShuntConversionTime::Microseconds8244
     );
+    dev.release().done();
+}
+
+// ── ALERT pin configuration ───────────────────────────────────────────────────
+
+/// Decompose a target nibble `n` = `CNVR ENOF LATCH POL` into the public
+/// configuration it stands for. CONFIG2 bits 7:4, so the register value is
+/// `n << 4`.
+fn alert_pin_config_for(n: u8) -> AlertPinConfig {
+    AlertPinConfig {
+        on_conversion_ready: n & 0b1000 != 0,
+        on_energy_overflow: n & 0b0100 != 0,
+        latch: if n & 0b0010 != 0 {
+            AlertLatch::Latched
+        } else {
+            AlertLatch::Transparent
+        },
+        polarity: if n & 0b0001 != 0 {
+            AlertPolarity::ActiveHigh
+        } else {
+            AlertPolarity::ActiveLow
+        },
+    }
+}
+
+#[test]
+fn alert_pin_config_defaults_match_power_on() {
+    // CONFIG2 resets to 0x0000, so the semantic default must be exactly this
+    // and not merely whatever the derived defaults happen to be.
+    assert_eq!(
+        AlertPinConfig::default(),
+        AlertPinConfig {
+            polarity: AlertPolarity::ActiveLow,
+            latch: AlertLatch::Transparent,
+            on_conversion_ready: false,
+            on_energy_overflow: false,
+        }
+    );
+}
+
+#[tokio::test]
+async fn set_alert_pin_config_writes_all_sixteen_encodings() {
+    // CNVR = 0x80, ENOF = 0x40, LATCH = 0x20, POL = 0x10, so the four-bit
+    // public combination lands in CONFIG2 bits 7:4 as n << 4. Four independent
+    // one-bit fields have exactly 16 combinations, so this is exhaustive.
+    for n in 0x0u8..=0xF {
+        let mut dev = sensor(&[
+            Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x00]),
+            Transaction::write(ADDR, vec![0x21, 0x00, n << 4]),
+        ]);
+        dev.set_alert_pin_config(alert_pin_config_for(n)).await.unwrap();
+        dev.release().done();
+    }
+}
+
+#[tokio::test]
+async fn alert_pin_config_reads_all_sixteen_encodings() {
+    // Full round-trip decode coverage: catches swapped fields as well as
+    // inverted enum meanings.
+    let expectations: Vec<_> = (0x0u8..=0xF)
+        .map(|n| Transaction::write_read(ADDR, vec![0x21], vec![0x00, n << 4]))
+        .collect();
+
+    let mut dev = sensor(&expectations);
+    for n in 0x0u8..=0xF {
+        assert_eq!(
+            dev.alert_pin_config().await.unwrap(),
+            alert_pin_config_for(n),
+            "n = {n:#X}"
+        );
+    }
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_alert_pin_config_preserves_range() {
+    // RANGE lives in CONFIG2 bits 3:0 and belongs to calibrate(); clobbering it
+    // would silently rescale every current and power reading. The read-back
+    // nibble 0b1010 has both zeroes and both ones, so losing any one of the
+    // four bits is visible: 0x000A & !0x00F0 | 0x00F0 = 0x00FA. Writing a
+    // freshly defaulted CONFIG2 instead would yield [0x00, 0xF0].
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0x0A]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0xFA]),
+    ]);
+    dev.set_alert_pin_config(AlertPinConfig {
+        polarity: AlertPolarity::ActiveHigh,
+        latch: AlertLatch::Latched,
+        on_conversion_ready: true,
+        on_energy_overflow: true,
+    })
+    .await
+    .unwrap();
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn calibrate_preserves_alert_pin_config() {
+    // The reciprocal of set_alert_pin_config_preserves_range: calibrate() owns
+    // RANGE and must leave bits 7:4 alone. The read-back value has all four
+    // ALERT controls set, so it is distinguishable from the reset value.
+    //
+    //   (0x00F0 & !0x0001) | 0x0001 = 0x00F1   // Ch1 RANGE bit 0, Range1
+    //
+    // Range1 with 500 µA/LSB and 8 mΩ gives SHUNT_CAL = 1280 / 4 = 320 =
+    // 0x0140.
+    let cal = Calibration::new(
+        CurrentLsb::from_nanoamps(500_000).unwrap(),
+        ShuntResistance::from_microohms(8_000).unwrap(),
+        AdcRange::Range1,
+    )
+    .unwrap();
+
+    let mut dev = sensor(&[
+        Transaction::write_read(ADDR, vec![0x21], vec![0x00, 0xF0]),
+        Transaction::write(ADDR, vec![0x21, 0x00, 0xF1]),
+        Transaction::write(ADDR, vec![0x05, 0x01, 0x40]),
+    ]);
+    dev.calibrate(Channel::Ch1, cal).await.unwrap();
+
+    assert_eq!(dev.calibration(Channel::Ch1), Some(cal));
     dev.release().done();
 }

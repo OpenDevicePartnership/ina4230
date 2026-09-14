@@ -373,6 +373,13 @@ absolutely scaled and survive untouched.
 Thresholds round to the nearest LSB, so a value read back through
 `Ina4230::alert` is the one you supplied, not the one the device holds.
 
+`AlertPinConfig` controls the device-global ALERT output: polarity, transparent
+or latched fault behavior, and whether conversion-ready or energy-overflow also
+asserts the pin. ALERT is open-drain, so the board must provide a suitable
+pull-up. Conversion-ready is independent of the four alert slots and can be
+enabled alongside one of them. In latched mode, releasing a fault requires both
+reading `FLAGS` through `read_flags()` and removing the fault condition.
+
 ## Error handling
 
 `Ina4230Error` is small on purpose: overflow conditions are reported through
@@ -439,8 +446,6 @@ Note the column order: A1 first, matching the datasheet.
 The following register controls and device protocols are defined by
 `INA4230.ddsl` or the datasheet, but have no high-level API yet:
 
-- **`CONFIG2` alert behaviour**: `CNVR_MASK`, `ENOF_MASK`, `ALERT_LATCH`, and
-  `ALERT_POL`.
 - **Energy accumulator reset** (`CONFIG2.ACC_RST`), which also clears the
   energy overflow flags. Until this lands, an energy overflow is unrecoverable
   short of `reset()` and a full recalibration — see "Reading flags".
