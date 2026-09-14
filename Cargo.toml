@@ -1,6 +1,6 @@
 [package]
 name = "ina4230"
-version = "0.1.0"
+version = "0.2.0"
 repository = "https://github.com/OpenDevicePartnership/ina4230"
 license = "MIT"
 description = "Platform-agnostic Rust driver for the Texas Instruments INA4230 quad-channel power and energy sense monitor."
