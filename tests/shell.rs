@@ -10,8 +10,8 @@ use embedded_hal::i2c::ErrorKind;
 use embedded_hal_mock::eh1::i2c::{Mock, Transaction};
 
 use ina4230::{
-    AdcRange, AddrPinState, AddressPins, AlertSlot, Calibration, Channel, CurrentLsb, CurrentSensor, EnergySensor,
-    Ina4230, Ina4230Error, PowerSensor, ShuntResistance, VoltageSensor,
+    AdcRange, AddrPinState, AddressPins, Alert, AlertSlot, BusVoltage, Calibration, Channel, CurrentLsb, CurrentSensor,
+    EnergySensor, Ina4230, Ina4230Error, Power, PowerSensor, ShuntResistance, ShuntVoltage, VoltageSensor,
 };
 
 /// Address for the default strapping, A0 = A1 = GND.
@@ -399,4 +399,107 @@ fn limit_out_of_range_reports_the_slot() {
     let e: Ina4230Error<ErrorKind> = Ina4230Error::LimitOutOfRange(AlertSlot::Two);
     assert_eq!(e, Ina4230Error::LimitOutOfRange(AlertSlot::Two));
     assert_ne!(e, Ina4230Error::LimitOutOfRange(AlertSlot::Three));
+}
+
+#[tokio::test]
+async fn alert_slots_start_empty_and_cost_no_bus_traffic_to_read() {
+    let dev = sensor(&[]);
+    for slot in AlertSlot::ALL {
+        assert_eq!(dev.alert(slot), None);
+    }
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn set_alert_addresses_every_slot_and_encodes_the_config() {
+    // ALERT_LIMIT 0x06/0x0E/0x16/0x1E, ALERT_CONFIG 0x07/0x0F/0x17/0x1F.
+    // 12 V / 1.6 mV = 7500 = 0x1D4C. Watching Ch3 => CHANNEL = 0b10,
+    // BusOver => ALERT_MASK = 3, so ALERT_CONFIG = 0b10_011 = 0x13.
+    let expectations = vec![
+        Transaction::write(ADDR, vec![0x06, 0x1D, 0x4C]),
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x13]),
+        Transaction::write(ADDR, vec![0x0E, 0x1D, 0x4C]),
+        Transaction::write(ADDR, vec![0x0F, 0x00, 0x13]),
+        Transaction::write(ADDR, vec![0x16, 0x1D, 0x4C]),
+        Transaction::write(ADDR, vec![0x17, 0x00, 0x13]),
+        Transaction::write(ADDR, vec![0x1E, 0x1D, 0x4C]),
+        Transaction::write(ADDR, vec![0x1F, 0x00, 0x13]),
+    ];
+    let mut dev = sensor(&expectations);
+    let alert = Alert::BusOver(BusVoltage::from_microvolts(12_000_000));
+
+    for slot in AlertSlot::ALL {
+        dev.set_alert(slot, Channel::Ch3, alert).await.unwrap();
+        assert_eq!(dev.alert(slot), Some((Channel::Ch3, alert)));
+    }
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn alert_config_encodes_each_target_channel() {
+    // Same slot, four different target channels. CHANNEL occupies bits 4:3.
+    let expectations = vec![
+        Transaction::write(ADDR, vec![0x06, 0x1D, 0x4C]),
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x03]), // Ch1 => 0b00_011
+        Transaction::write(ADDR, vec![0x06, 0x1D, 0x4C]),
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x0B]), // Ch2 => 0b01_011
+        Transaction::write(ADDR, vec![0x06, 0x1D, 0x4C]),
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x13]), // Ch3 => 0b10_011
+        Transaction::write(ADDR, vec![0x06, 0x1D, 0x4C]),
+        Transaction::write(ADDR, vec![0x07, 0x00, 0x1B]), // Ch4 => 0b11_011
+    ];
+    let mut dev = sensor(&expectations);
+    let alert = Alert::BusOver(BusVoltage::from_microvolts(12_000_000));
+
+    for ch in Channel::ALL {
+        dev.set_alert(AlertSlot::One, ch, alert).await.unwrap();
+    }
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn shunt_and_power_alerts_on_an_uncalibrated_channel_do_not_touch_the_bus() {
+    // No expectations: any transaction panics.
+    let mut dev = sensor(&[]);
+    let ch = Channel::Ch1;
+    let v = ShuntVoltage::from_nanovolts(1_000_000);
+    let p = Power::from_nanowatts(1_000_000_000);
+
+    assert_eq!(
+        dev.set_alert(AlertSlot::One, ch, Alert::ShuntOver(v)).await,
+        Err(Ina4230Error::NotCalibrated(ch))
+    );
+    assert_eq!(
+        dev.set_alert(AlertSlot::One, ch, Alert::PowerOver(p)).await,
+        Err(Ina4230Error::NotCalibrated(ch))
+    );
+    assert_eq!(dev.alert(AlertSlot::One), None);
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn an_unrepresentable_threshold_does_not_touch_the_bus() {
+    let mut dev = sensor(&[]);
+    let too_big = BusVoltage::from_microvolts(60_000_000); // > 52.4272 V
+    assert_eq!(
+        dev.set_alert(AlertSlot::Four, Channel::Ch1, Alert::BusOver(too_big))
+            .await,
+        Err(Ina4230Error::LimitOutOfRange(AlertSlot::Four))
+    );
+    assert_eq!(dev.alert(AlertSlot::Four), None);
+    dev.release().done();
+}
+
+#[tokio::test]
+async fn clear_alert_zeroes_the_mask_and_drops_the_cache_entry() {
+    let mut dev = sensor(&[
+        Transaction::write(ADDR, vec![0x0E, 0x1D, 0x4C]),
+        Transaction::write(ADDR, vec![0x0F, 0x00, 0x13]),
+        Transaction::write(ADDR, vec![0x0F, 0x00, 0x00]),
+    ]);
+    let alert = Alert::BusOver(BusVoltage::from_microvolts(12_000_000));
+    dev.set_alert(AlertSlot::Two, Channel::Ch3, alert).await.unwrap();
+    dev.clear_alert(AlertSlot::Two).await.unwrap();
+    assert_eq!(dev.alert(AlertSlot::Two), None);
+    dev.release().done();
 }

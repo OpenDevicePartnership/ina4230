@@ -10,6 +10,7 @@
 
 use proptest::prelude::*;
 
+use ina4230::Alert;
 use ina4230::AlertSlot;
 use ina4230::convert;
 use ina4230::convert::{
@@ -625,4 +626,29 @@ proptest! {
     fn power_limit_never_panics(nw in 0u64..=u64::MAX) {
         let _ = convert::encode_power_limit(Power::from_nanowatts(nw), datasheet_example_calibration());
     }
+}
+
+#[test]
+fn alert_variants_map_onto_the_datasheet_encodings() {
+    // Datasheet Table 7-8, ALERT_MASK: 1 = SOL, 2 = SUL, 3 = BOL, 4 = BUL, 5 = POL.
+    let v = ShuntVoltage::from_nanovolts(1_000_000);
+    let b = BusVoltage::from_microvolts(12_000_000);
+    let p = Power::from_nanowatts(1_000_000_000);
+    assert_eq!(Alert::ShuntOver(v).mask_encoding(), 1);
+    assert_eq!(Alert::ShuntUnder(v).mask_encoding(), 2);
+    assert_eq!(Alert::BusOver(b).mask_encoding(), 3);
+    assert_eq!(Alert::BusUnder(b).mask_encoding(), 4);
+    assert_eq!(Alert::PowerOver(p).mask_encoding(), 5);
+}
+
+#[test]
+fn only_shunt_and_power_alerts_need_calibration() {
+    let v = ShuntVoltage::from_nanovolts(1_000_000);
+    let b = BusVoltage::from_microvolts(12_000_000);
+    let p = Power::from_nanowatts(1_000_000_000);
+    assert!(Alert::ShuntOver(v).needs_calibration());
+    assert!(Alert::ShuntUnder(v).needs_calibration());
+    assert!(Alert::PowerOver(p).needs_calibration());
+    assert!(!Alert::BusOver(b).needs_calibration());
+    assert!(!Alert::BusUnder(b).needs_calibration());
 }
