@@ -12,23 +12,16 @@ name: device-driver-pregen-check
 jobs:
   device-driver-pregen-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt }
-      - name: Install device-driver-cli
-        uses: baptiste0928/cargo-install@v3
         with:
-          crate: device-driver-cli
-      - name: Generate device.rs from INA4230.ddsl
-        run: ddc build rust -s INA4230.ddsl -o ci_gen.rs --rust-defmt-feature=defmt
-      - name: Format generated file
-        run: rustfmt --edition 2024 ci_gen.rs
-      - name: Check generated file matches committed src/device.rs
-        uses: LouisBrunner/diff-action@v3.0.0
+          persist-credentials: false
+      - name: Check generated device driver
+        uses: tullom/device-driver-pregen-check@v1.2.0
         with:
-          old: ci_gen.rs
-          new: src/device.rs
-          mode: strict
-          tolerance: same
+          source: INA4230.ddsl
+          generated-file: src/device.rs
+          cli-version: '2.1.0'
+          rust-toolchain: '1.94.0'
+          rust-defmt-feature: defmt
