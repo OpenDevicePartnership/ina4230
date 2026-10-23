@@ -488,12 +488,14 @@ controller supports 2.94 MHz operation, this driver already works over it.
 ## Regenerating `src/device.rs`
 
 ```sh
-cargo install device-driver-cli
+rustup toolchain install 1.94.0 --profile minimal --component rustfmt
+cargo +1.94.0 install device-driver-cli --version '=2.1.0' --locked
 ddc build rust -s INA4230.ddsl -o src/device.rs --rust-defmt-feature=defmt
-rustfmt --edition 2024 src/device.rs
+rustup run 1.94.0 rustfmt --edition 2024 --config newline_style=Unix src/device.rs
 ```
 
-CI verifies that the committed file matches the generator output.
+CI uses `tullom/device-driver-pregen-check@v1.2.0`, pinned to CLI 2.1.0 and
+Rust 1.94.0, to verify that the committed file matches the generator output.
 
 ## MSRV
 
