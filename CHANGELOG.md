@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/OpenDevicePartnership/ina4230/compare/v0.2.0...v0.2.1) - 2026-11-24
+
+### Other
+
+- *(deps)* cargo vet/deny ([#40](https://github.com/OpenDevicePartnership/ina4230/pull/40))
+
 ## [0.2.0](https://github.com/OpenDevicePartnership/ina4230/compare/v0.1.0...v0.2.0) - 2026-09-14
 
 ### Added
