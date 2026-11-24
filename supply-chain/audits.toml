@@ -1,6 +1,12 @@
 
 # cargo-vet audits file
 
+[[audits.bit-vec]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "0.10.2"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
 [[audits.bitfield-struct]]
 who = "matteotullo <matteotullo@microsoft.com>"
 criteria = "safe-to-deploy"
@@ -10,6 +16,24 @@ version = "0.10.1"
 who = "matteotullo <matteotullo@microsoft.com>"
 criteria = "safe-to-deploy"
 delta = "2.9.1 -> 2.9.4"
+
+[[audits.borsh]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "1.8.1"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
+[[audits.borsh-derive]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "1.8.1"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
+[[audits.chacha20]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "0.10.2"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
 
 [[audits.embedded-batteries]]
 who = "matteotullo <matteotullo@microsoft.com>"
@@ -21,15 +45,98 @@ who = "matteotullo <matteotullo@microsoft.com>"
 criteria = "safe-to-deploy"
 version = "0.2.1"
 
+[[audits.equivalent]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "1.0.3"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
+[[audits.hashbrown]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "0.17.2"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
+[[audits.indexmap]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "2.14.2"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
 [[audits.once_cell]]
 who = "Jerry Xie <jerryxie@microsoft.com>"
 criteria = "safe-to-deploy"
 delta = "1.21.3 -> 1.21.4"
 
+[[audits.pico-de-gallo-hal]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "0.8.0"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
+[[audits.pico-de-gallo-internal]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "0.8.0"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
+[[audits.pico-de-gallo-lib]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "0.9.0"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
 [[audits.pin-project-lite]]
 who = "Jerry Xie <jerryxie@microsoft.com>"
 criteria = "safe-to-run"
 delta = "0.2.16 -> 0.2.17"
+
+[[audits.proptest]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "1.12.0"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
+[[audits.rand]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "0.10.4"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
+[[audits.rand_core]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "0.10.1"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
+[[audits.rand_xorshift]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "0.5.0"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
+[[audits.tokio]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+delta = "1.53.1 -> 1.54.1"
+
+[[audits.toml_datetime]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "1.1.3+spec-1.1.0"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
+[[audits.toml_edit]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "0.25.20+spec-1.1.0"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
+
+[[audits.toml_parser]]
+who = "Felipe Balbi <felipe.balbi@microsoft.com>"
+criteria = "safe-to-run"
+version = "1.1.6+spec-1.1.0"
+notes = "Previously reviewed by Felipe Balbi; recorded here at his request."
 
 [[audits.windows-sys]]
 who = "matteotullo <matteotullo@microsoft.com>"
@@ -60,7 +167,7 @@ end = "2027-03-13"
 
 [[trusted.bitflags]]
 criteria = "safe-to-deploy"
-user-id = 3204
+user-id = 3204 # Ashley Mannix (KodrAus)
 start = "2019-05-02"
 end = "2027-03-13"
 
@@ -114,7 +221,7 @@ end = "2027-03-13"
 
 [[trusted.object]]
 criteria = "safe-to-run"
-user-id = 4415 # Philip Craig (philipc)
+user-id = 4415
 start = "2019-04-26"
 end = "2027-03-13"
 
@@ -174,7 +281,7 @@ end = "2027-03-13"
 
 [[trusted.winnow]]
 criteria = "safe-to-deploy"
-user-id = 6743
+user-id = 6743 # Ed Page (epage)
 start = "2023-02-22"
 end = "2027-03-13"
 

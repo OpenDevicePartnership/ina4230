@@ -33,12 +33,12 @@ embedded-hal-mock = { version = "0.11.1", features = ["embedded-hal-async"] }
 # Host-side embedded-hal-async implementation, used by the examples in
 # `examples/` to drive a real INA4230 over a Pico de Gallo USB bridge. Not
 # needed to build the driver itself.
-pico-de-gallo-hal = "0.7.0"
-proptest = "1.6"
+pico-de-gallo-hal = "0.8.0"
+proptest = "1.12"
 # The examples run the async driver on a multi-threaded runtime: inside tokio,
 # pico-de-gallo-hal uses `block_in_place`, which panics on a current-thread
 # runtime.
-tokio = { version = "1.52", features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1.54", features = ["rt", "rt-multi-thread", "macros"] }
 
 
 [lints.rust]
